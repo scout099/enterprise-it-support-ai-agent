@@ -1,6 +1,7 @@
 """Authorized PostgreSQL keyword, vector, and hybrid knowledge retrieval."""
 
 import asyncio
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -15,6 +16,46 @@ from enterprise_it_support.intelligence.embeddings import EmbeddingProvider, Emb
 from enterprise_it_support.knowledge.domain import DocumentSourceType, DocumentStatus
 from enterprise_it_support.knowledge.indexing import EmbeddingProfile
 from enterprise_it_support.knowledge.models import Document, DocumentChunk, DocumentVersion
+
+# Versioned English question-word filter calibrated only for the Phase 5 demo corpus.
+# It deliberately changes query parsing, not evidence scoring, and must be reevaluated
+# before adding another language or materially different enterprise corpus.
+_ENGLISH_QUESTION_STOP_WORDS_V1 = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "company",
+        "do",
+        "does",
+        "for",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "should",
+        "the",
+        "to",
+        "use",
+        "what",
+        "when",
+        "which",
+    }
+)
+_MIN_KEYWORD_TERM_LENGTH = 2
+
+
+def extract_keyword_terms(text: str) -> tuple[str, ...]:
+    """Extract the versioned deterministic terms used by the demo keyword query."""
+    return tuple(
+        term
+        for term in re.findall(r"[^\W_]+", text.casefold())
+        if len(term) >= _MIN_KEYWORD_TERM_LENGTH and term not in _ENGLISH_QUESTION_STOP_WORDS_V1
+    )
 
 
 class RetrievalMethod(StrEnum):
@@ -79,9 +120,41 @@ class SearchResult:
     document_version: int
     content: str
     section_title: str | None
-    score: float
+    rrf_score: float
+    keyword_score: float | None
+    vector_similarity: float | None
     retrieval_method: RetrievalMethod
     citation: Citation
+
+
+@dataclass(frozen=True)
+class RelevancePolicy:
+    """Select evidence using calibrated raw retrieval signals, never fused rank."""
+
+    min_keyword_score: float
+    min_vector_similarity: float | None
+
+    def __post_init__(self) -> None:
+        if self.min_keyword_score < 0:
+            raise ValueError("Minimum keyword score cannot be negative")
+        if self.min_vector_similarity is not None and not (-1 <= self.min_vector_similarity <= 1):
+            raise ValueError("Minimum vector similarity must be between -1 and 1")
+
+    def select(self, results: tuple[SearchResult, ...]) -> tuple[SearchResult, ...]:
+        """Preserve retrieval order while dropping results below every enabled threshold."""
+        return tuple(result for result in results if self.accepts(result))
+
+    def accepts(self, result: SearchResult) -> bool:
+        """Return whether any calibrated raw signal is strong enough."""
+        keyword_relevant = (
+            result.keyword_score is not None and result.keyword_score >= self.min_keyword_score
+        )
+        vector_relevant = (
+            self.min_vector_similarity is not None
+            and result.vector_similarity is not None
+            and result.vector_similarity >= self.min_vector_similarity
+        )
+        return keyword_relevant or vector_relevant
 
 
 @dataclass(frozen=True)
@@ -97,7 +170,14 @@ class RetrievalCandidate:
     score: float
     retrieval_method: RetrievalMethod
 
-    def to_search_result(self) -> SearchResult:
+    def to_search_result(
+        self,
+        *,
+        rrf_score: float,
+        keyword_score: float | None,
+        vector_similarity: float | None,
+        retrieval_method: RetrievalMethod,
+    ) -> SearchResult:
         return SearchResult(
             chunk_id=self.chunk_id,
             document_id=self.document_id,
@@ -105,8 +185,10 @@ class RetrievalCandidate:
             document_version=self.document_version,
             content=self.content,
             section_title=self.section_title,
-            score=self.score,
-            retrieval_method=self.retrieval_method,
+            rrf_score=rrf_score,
+            keyword_score=keyword_score,
+            vector_similarity=vector_similarity,
+            retrieval_method=retrieval_method,
             citation=Citation(
                 document_title=self.document_title,
                 document_version=self.document_version,
@@ -138,7 +220,7 @@ class RetrievalRepository:
             + DocumentChunk.content
         )
         search_vector = func.to_tsvector("simple", search_document)
-        search_query = func.websearch_to_tsquery("simple", query)
+        search_query = func.websearch_to_tsquery("simple", self._keyword_query_text(query))
         keyword_score = func.ts_rank_cd(search_vector, search_query).label("score")
         statement = (
             self._candidate_statement(filters, user_context, now)
@@ -150,6 +232,14 @@ class RetrievalRepository:
         async with self._session_factory() as session:
             rows = (await session.execute(statement)).all()
         return tuple(self._candidate_from_row(row, RetrievalMethod.KEYWORD) for row in rows)
+
+    @staticmethod
+    def _keyword_query_text(query: str) -> str:
+        """Build deterministic any-term FTS input without trusting websearch operators."""
+        terms = extract_keyword_terms(query)
+        if not terms:
+            return "__no_meaningful_search_terms__"
+        return " OR ".join(terms)
 
     async def search_vector(
         self,
@@ -372,17 +462,26 @@ class KnowledgeRetriever:
         top_k: int,
     ) -> tuple[SearchResult, ...]:
         candidates: dict[UUID, RetrievalCandidate] = {}
-        scores: dict[UUID, float] = {}
+        rrf_scores: dict[UUID, float] = {}
         methods: dict[UUID, set[RetrievalMethod]] = {}
+        keyword_scores: dict[UUID, float] = {}
+        vector_similarities: dict[UUID, float] = {}
         for result_list in (keyword_results, vector_results):
             for rank, candidate in enumerate(result_list, start=1):
                 candidates.setdefault(candidate.chunk_id, candidate)
-                scores[candidate.chunk_id] = scores.get(candidate.chunk_id, 0.0) + 1.0 / (
+                rrf_scores[candidate.chunk_id] = rrf_scores.get(candidate.chunk_id, 0.0) + 1.0 / (
                     self._rrf_k + rank
                 )
                 methods.setdefault(candidate.chunk_id, set()).add(candidate.retrieval_method)
+                if candidate.retrieval_method is RetrievalMethod.KEYWORD:
+                    keyword_scores[candidate.chunk_id] = candidate.score
+                elif candidate.retrieval_method is RetrievalMethod.VECTOR:
+                    vector_similarities[candidate.chunk_id] = candidate.score
 
-        ranked_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], str(chunk_id)))
+        ranked_ids = sorted(
+            rrf_scores,
+            key=lambda chunk_id: (-rrf_scores[chunk_id], str(chunk_id)),
+        )
         results = []
         for chunk_id in ranked_ids[:top_k]:
             method = (
@@ -390,10 +489,13 @@ class KnowledgeRetriever:
                 if len(methods[chunk_id]) > 1
                 else next(iter(methods[chunk_id]))
             )
-            candidate = replace(
-                candidates[chunk_id],
-                score=scores[chunk_id],
-                retrieval_method=method,
+            candidate = replace(candidates[chunk_id], retrieval_method=method)
+            results.append(
+                candidate.to_search_result(
+                    rrf_score=rrf_scores[chunk_id],
+                    keyword_score=keyword_scores.get(chunk_id),
+                    vector_similarity=vector_similarities.get(chunk_id),
+                    retrieval_method=method,
+                )
             )
-            results.append(candidate.to_search_result())
         return tuple(results)

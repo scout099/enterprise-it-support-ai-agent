@@ -11,18 +11,27 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from enterprise_it_support.conversation.repository import (
     ConversationRoleMismatchError,
+    ErrorStage,
     SavedTurn,
     StoredConversation,
+    TurnStatus,
+    TurnTrace,
 )
 from enterprise_it_support.intelligence.model_gateway import (
     ModelCallMetadata,
     ModelGateway,
+    ModelGatewayError,
+    ModelGatewayResponseError,
+    ModelGatewayTimeoutError,
+    ModelGatewayUnavailableError,
     ModelMessage,
     StructuredModelResponse,
     TokenUsage,
 )
 from enterprise_it_support.knowledge.retrieval import (
     KnowledgeRetriever,
+    RelevancePolicy,
+    RetrievalUnavailableError,
     SearchFilters,
     SearchResult,
     UserContext,
@@ -66,10 +75,10 @@ class RAGModelOutput(BaseModel):
 
     summary: str = Field(min_length=1, max_length=1000)
     answer: str = Field(min_length=1, max_length=8000)
-    diagnosis: list[KnowledgeStatement] = Field(default_factory=list, max_length=20)
-    evidence_ids: list[str] = Field(default_factory=list, max_length=20)
-    limitations: list[str] = Field(default_factory=list, max_length=20)
-    next_steps: list[NextStep] = Field(default_factory=list, max_length=20)
+    diagnosis: list[KnowledgeStatement] = Field(max_length=20)
+    evidence_ids: list[str] = Field(max_length=20)
+    limitations: list[str] = Field(max_length=20)
+    next_steps: list[NextStep] = Field(max_length=20)
     confidence: float = Field(ge=0, le=1)
     answerable: bool
 
@@ -116,7 +125,13 @@ class RAGCitationValidationError(RuntimeError):
 class ConversationStore(Protocol):
     """Persistence behavior required by the RAG service."""
 
-    async def save_turn(self, **kwargs: Any) -> SavedTurn: ...
+    async def save_turn(
+        self,
+        *,
+        conversation_id: UUID | None,
+        user_role: str,
+        trace: TurnTrace,
+    ) -> SavedTurn: ...
 
     async def get(self, conversation_id: UUID) -> StoredConversation: ...
 
@@ -134,6 +149,7 @@ class ControlledEvidence:
             "document_title": self.result.document_title,
             "document_version": self.result.document_version,
             "section_title": self.result.section_title,
+            "keyword_score": self.result.keyword_score,
             "content": self.content,
         }
 
@@ -147,6 +163,7 @@ class RAGAnswerService:
         retriever: KnowledgeRetriever,
         model_gateway: ModelGateway,
         conversation_store: ConversationStore,
+        relevance_policy: RelevancePolicy,
         top_k: int,
         max_context_chars: int,
     ) -> None:
@@ -157,6 +174,7 @@ class RAGAnswerService:
         self._retriever = retriever
         self._model_gateway = model_gateway
         self._conversation_store = conversation_store
+        self._relevance_policy = relevance_policy
         self._top_k = top_k
         self._max_context_chars = max_context_chars
 
@@ -177,47 +195,112 @@ class RAGAnswerService:
         await self._validate_conversation_access(conversation_id, normalized_role)
 
         started = monotonic()
-        retrieval_results = await self._retriever.search(
-            normalized_question,
-            self._top_k,
-            SearchFilters(),
-            UserContext(role=normalized_role),
-        )
-        controlled_evidence = self._build_controlled_context(retrieval_results)
+        retrieval_results: tuple[SearchResult, ...] = ()
+        try:
+            retrieval_results = await self._retriever.search(
+                normalized_question,
+                self._top_k,
+                SearchFilters(),
+                UserContext(role=normalized_role),
+            )
+        except RetrievalUnavailableError:
+            await self._save_failed_trace(
+                conversation_id=conversation_id,
+                user_role=normalized_role,
+                question=normalized_question,
+                retrieval_results=retrieval_results,
+                metadata=self._not_called_metadata(),
+                started=started,
+                request_id=request_id,
+                error_stage=ErrorStage.RETRIEVAL,
+                error_code="retrieval_unavailable",
+            )
+            raise
+        relevant_results = self._relevance_policy.select(retrieval_results)
+        controlled_evidence = self._build_controlled_context(relevant_results)
         if not controlled_evidence:
             answer = self._insufficient_evidence_answer()
-            metadata = ModelCallMetadata(
-                provider="not_called",
-                configured_model=self._model_gateway.model_name,
-                resolved_model="not-called",
-                prompt_version=RAG_PROMPT_VERSION,
-                usage=TokenUsage(),
-                attempts=0,
-            )
+            metadata = self._not_called_metadata()
+            status = TurnStatus.REFUSED
         else:
-            model_response = await self._generate(
-                question=normalized_question,
-                evidence=controlled_evidence,
-            )
-            metadata = model_response.metadata
-            answer = self._materialize_answer(model_response.value, controlled_evidence)
+            try:
+                model_response = await self._generate(
+                    question=normalized_question,
+                    evidence=controlled_evidence,
+                )
+                metadata = model_response.metadata
+                answer = self._materialize_answer(model_response.value, controlled_evidence)
+                status = (
+                    TurnStatus.SUCCEEDED if model_response.value.answerable else TurnStatus.REFUSED
+                )
+            except ModelGatewayResponseError as exception:
+                await self._save_model_failure(
+                    exception=exception,
+                    conversation_id=conversation_id,
+                    user_role=normalized_role,
+                    question=normalized_question,
+                    retrieval_results=retrieval_results,
+                    started=started,
+                    request_id=request_id,
+                    error_stage=ErrorStage.VALIDATION,
+                    error_code="model_response_invalid",
+                )
+                raise
+            except ModelGatewayTimeoutError as exception:
+                await self._save_model_failure(
+                    exception=exception,
+                    conversation_id=conversation_id,
+                    user_role=normalized_role,
+                    question=normalized_question,
+                    retrieval_results=retrieval_results,
+                    started=started,
+                    request_id=request_id,
+                    error_stage=ErrorStage.MODEL,
+                    error_code="model_timeout",
+                )
+                raise
+            except ModelGatewayUnavailableError as exception:
+                await self._save_model_failure(
+                    exception=exception,
+                    conversation_id=conversation_id,
+                    user_role=normalized_role,
+                    question=normalized_question,
+                    retrieval_results=retrieval_results,
+                    started=started,
+                    request_id=request_id,
+                    error_stage=ErrorStage.MODEL,
+                    error_code="model_unavailable",
+                )
+                raise
+            except RAGCitationValidationError:
+                await self._save_failed_trace(
+                    conversation_id=conversation_id,
+                    user_role=normalized_role,
+                    question=normalized_question,
+                    retrieval_results=retrieval_results,
+                    metadata=model_response.metadata,
+                    started=started,
+                    request_id=request_id,
+                    error_stage=ErrorStage.CITATION,
+                    error_code="citation_invalid",
+                )
+                raise
 
         latency_ms = max(0, int((monotonic() - started) * 1000))
         saved = await self._conversation_store.save_turn(
             conversation_id=conversation_id,
             user_role=normalized_role,
-            question=normalized_question,
-            retrieval_query=normalized_question,
-            retrieved_chunk_ids=tuple(result.chunk_id for result in retrieval_results),
-            model_provider=metadata.provider,
-            configured_model=metadata.configured_model,
-            model_name=metadata.resolved_model,
-            model_attempts=metadata.attempts,
-            prompt_version=metadata.prompt_version,
-            response=answer.model_dump(mode="json"),
-            latency_ms=latency_ms,
-            token_usage=metadata.usage,
-            request_id=request_id,
+            trace=TurnTrace(
+                question=normalized_question,
+                retrieval_query=normalized_question,
+                retrieved_chunk_ids=tuple(result.chunk_id for result in retrieval_results),
+                model_metadata=metadata,
+                assistant_content=answer.answer,
+                response=answer.model_dump(mode="json"),
+                latency_ms=latency_ms,
+                request_id=request_id,
+                status=status,
+            ),
         )
         return ChatTurnResult(
             conversation_id=saved.conversation_id,
@@ -227,6 +310,72 @@ class RAGAnswerService:
             model_metadata=metadata,
             latency_ms=latency_ms,
             request_id=request_id,
+        )
+
+    def _not_called_metadata(self) -> ModelCallMetadata:
+        return ModelCallMetadata(
+            provider="not_called",
+            configured_model=self._model_gateway.model_name,
+            resolved_model="not-called",
+            prompt_version=RAG_PROMPT_VERSION,
+            usage=TokenUsage(),
+            attempts=0,
+        )
+
+    async def _save_model_failure(
+        self,
+        *,
+        exception: ModelGatewayError,
+        conversation_id: UUID | None,
+        user_role: str,
+        question: str,
+        retrieval_results: tuple[SearchResult, ...],
+        started: float,
+        request_id: str,
+        error_stage: ErrorStage,
+        error_code: str,
+    ) -> None:
+        await self._save_failed_trace(
+            conversation_id=conversation_id,
+            user_role=user_role,
+            question=question,
+            retrieval_results=retrieval_results,
+            metadata=exception.metadata or self._not_called_metadata(),
+            started=started,
+            request_id=request_id,
+            error_stage=error_stage,
+            error_code=error_code,
+        )
+
+    async def _save_failed_trace(
+        self,
+        *,
+        conversation_id: UUID | None,
+        user_role: str,
+        question: str,
+        retrieval_results: tuple[SearchResult, ...],
+        metadata: ModelCallMetadata,
+        started: float,
+        request_id: str,
+        error_stage: ErrorStage,
+        error_code: str,
+    ) -> None:
+        await self._conversation_store.save_turn(
+            conversation_id=conversation_id,
+            user_role=user_role,
+            trace=TurnTrace(
+                question=question,
+                retrieval_query=question,
+                retrieved_chunk_ids=tuple(result.chunk_id for result in retrieval_results),
+                model_metadata=metadata,
+                assistant_content="No grounded answer was produced for this attempt.",
+                response=None,
+                latency_ms=max(0, int((monotonic() - started) * 1000)),
+                request_id=request_id,
+                status=TurnStatus.FAILED,
+                error_stage=error_stage,
+                error_code=error_code,
+            ),
         )
 
     async def _validate_conversation_access(

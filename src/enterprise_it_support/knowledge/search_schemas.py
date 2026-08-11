@@ -53,6 +53,8 @@ class SearchResultResponse(BaseModel):
     document_version: int
     content: str
     section_title: str | None
-    score: float
+    rrf_score: float
+    keyword_score: float | None
+    vector_similarity: float | None
     retrieval_method: RetrievalMethod
     citation: CitationResponse

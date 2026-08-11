@@ -93,6 +93,10 @@ def test_embedding_configuration_loads_model_dimension_version_and_secret(
     monkeypatch.setenv("IT_SUPPORT_EMBEDDING_DIMENSION", "256")
     monkeypatch.setenv("IT_SUPPORT_EMBEDDING_VERSION", "support-v2")
     monkeypatch.setenv("IT_SUPPORT_EMBEDDING_API_KEY", "test-secret-value")
+    monkeypatch.setenv(
+        "IT_SUPPORT_RAG_VECTOR_THRESHOLD_PROFILE",
+        "text-embedding-3-small:256:support-v2",
+    )
 
     settings = Settings(_env_file=None)
 
@@ -100,6 +104,7 @@ def test_embedding_configuration_loads_model_dimension_version_and_secret(
     assert settings.embedding_model == "text-embedding-3-small"
     assert settings.embedding_dimension == 256
     assert settings.embedding_version == "support-v2"
+    assert settings.embedding_profile_key == "text-embedding-3-small:256:support-v2"
     assert settings.embedding_api_key is not None
     assert settings.embedding_api_key.get_secret_value() == "test-secret-value"
 
@@ -112,6 +117,24 @@ def test_openai_embedding_provider_requires_api_key(
     monkeypatch.delenv("IT_SUPPORT_EMBEDDING_API_KEY", raising=False)
 
     with pytest.raises(ValueError, match="API key"):
+        Settings(_env_file=None)
+
+
+def test_openai_vector_threshold_must_match_active_embedding_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IT_SUPPORT_DATABASE_URL", DEVELOPMENT_URL)
+    monkeypatch.setenv("IT_SUPPORT_EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("IT_SUPPORT_EMBEDDING_MODEL", "text-embedding-3-small")
+    monkeypatch.setenv("IT_SUPPORT_EMBEDDING_DIMENSION", "256")
+    monkeypatch.setenv("IT_SUPPORT_EMBEDDING_VERSION", "support-v2")
+    monkeypatch.setenv("IT_SUPPORT_EMBEDDING_API_KEY", "test-secret-value")
+    monkeypatch.setenv(
+        "IT_SUPPORT_RAG_VECTOR_THRESHOLD_PROFILE",
+        "different-model:256:support-v2",
+    )
+
+    with pytest.raises(ValueError, match="bound to the active embedding profile"):
         Settings(_env_file=None)
 
 

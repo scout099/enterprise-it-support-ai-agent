@@ -8,10 +8,12 @@ import pytest
 from openai import APIConnectionError
 from pydantic import BaseModel
 
+from enterprise_it_support.agent_runtime.rag import RAGModelOutput
 from enterprise_it_support.intelligence.model_gateway import (
     FakeModelGateway,
     ModelGatewayResponseError,
     ModelGatewayTimeoutError,
+    ModelGatewayUnavailableError,
     ModelMessage,
     OpenAICompatibleModelGateway,
     TokenUsage,
@@ -20,6 +22,13 @@ from enterprise_it_support.intelligence.model_gateway import (
 
 class ExampleResponse(BaseModel):
     value: str
+
+
+def test_rag_model_output_schema_requires_every_declared_field() -> None:
+    schema = RAGModelOutput.model_json_schema()
+
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
 
 
 class StubCompletions:
@@ -149,7 +158,7 @@ async def test_openai_compatible_gateway_bounds_timeout_retries() -> None:
         sleeper=no_sleep,
     )
 
-    with pytest.raises(ModelGatewayTimeoutError):
+    with pytest.raises(ModelGatewayTimeoutError) as captured:
         await gateway.generate_structured_response(
             messages=[ModelMessage(role="user", content="question")],
             response_schema=ExampleResponse,
@@ -157,6 +166,10 @@ async def test_openai_compatible_gateway_bounds_timeout_retries() -> None:
         )
 
     assert len(completions.calls) == 2
+    assert captured.value.metadata is not None
+    assert captured.value.metadata.attempts == 2
+    assert captured.value.metadata.prompt_version == "prompt-v1"
+    assert captured.value.metadata.usage == TokenUsage()
 
 
 @pytest.mark.asyncio
@@ -172,7 +185,7 @@ async def test_openai_compatible_gateway_does_not_retry_malformed_output() -> No
         client=client,
     )
 
-    with pytest.raises(ModelGatewayResponseError):
+    with pytest.raises(ModelGatewayResponseError) as captured:
         await gateway.generate_structured_response(
             messages=[ModelMessage(role="user", content="question")],
             response_schema=ExampleResponse,
@@ -180,3 +193,38 @@ async def test_openai_compatible_gateway_does_not_retry_malformed_output() -> No
         )
 
     assert len(completions.calls) == 1
+    assert captured.value.metadata is not None
+    assert captured.value.metadata.attempts == 1
+    assert captured.value.metadata.usage.total_tokens == 18
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_gateway_records_exhausted_provider_attempts() -> None:
+    connection_error = APIConnectionError(request=httpx.Request("POST", "https://example.test"))
+    client, completions = stub_client([connection_error, connection_error])
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    gateway = OpenAICompatibleModelGateway(
+        api_key="test-key",
+        base_url="https://example.test/v1",
+        model="configured-test-model",
+        timeout_seconds=1,
+        max_attempts=2,
+        max_output_tokens=100,
+        client=client,
+        sleeper=no_sleep,
+    )
+
+    with pytest.raises(ModelGatewayUnavailableError) as captured:
+        await gateway.generate_structured_response(
+            messages=[ModelMessage(role="user", content="question")],
+            response_schema=ExampleResponse,
+            prompt_version="prompt-v1",
+        )
+
+    assert len(completions.calls) == 2
+    assert captured.value.metadata is not None
+    assert captured.value.metadata.attempts == 2
+    assert captured.value.metadata.configured_model == "configured-test-model"

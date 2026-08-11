@@ -9,6 +9,7 @@ from apps.dependencies import (
     build_indexing_service,
     build_knowledge_retriever,
     build_model_gateway,
+    build_relevance_policy,
 )
 from enterprise_it_support.agent_runtime.rag import RAGAnswerService
 from enterprise_it_support.conversation.repository import ConversationRepository
@@ -85,6 +86,7 @@ def create_app(
             retriever=resolved_knowledge_retriever,
             model_gateway=resolved_model_gateway,
             conversation_store=resolved_conversation_repository,
+            relevance_policy=build_relevance_policy(resolved_settings),
             top_k=resolved_settings.rag_top_k,
             max_context_chars=resolved_settings.rag_max_context_chars,
         )

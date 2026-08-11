@@ -1,4 +1,4 @@
-"""Deterministic Recall@K evaluation for the public retrieval interface."""
+"""Deterministic retrieval and relevance-gate evaluation for grounded RAG."""
 
 import json
 from dataclasses import dataclass
@@ -9,6 +9,7 @@ from uuid import UUID
 from enterprise_it_support.knowledge.domain import DocumentSummaryView
 from enterprise_it_support.knowledge.retrieval import (
     KnowledgeRetriever,
+    RelevancePolicy,
     SearchFilters,
     UserContext,
 )
@@ -20,8 +21,9 @@ class RetrievalEvaluationCase:
 
     id: str
     query: str
-    expected_source_name: str
-    expected_document_title: str
+    answerable: bool
+    expected_source_name: str | None
+    expected_document_title: str | None
 
 
 @dataclass(frozen=True)
@@ -30,14 +32,17 @@ class ResolvedRetrievalEvaluationCase:
 
     id: str
     query: str
-    expected_document_id: UUID
+    answerable: bool
+    expected_document_id: UUID | None
 
 
 @dataclass(frozen=True)
 class RetrievalCaseResult:
-    """Per-query hit outcome at the two required cutoffs."""
+    """Per-query retrieval hit and whether the relevance gate would call the model."""
 
     id: str
+    expected_answerable: bool
+    would_call_model: bool
     hit_at_3: bool
     hit_at_5: bool
     retrieved_document_ids: tuple[UUID, ...]
@@ -46,21 +51,33 @@ class RetrievalCaseResult:
 
 @dataclass(frozen=True)
 class RetrievalEvaluationReport:
-    """Aggregate Recall@3 and Recall@5 plus inspectable failures."""
+    """Retrieval recall plus deterministic relevance-gate abstention metrics."""
 
     dataset_version: str
     total_cases: int
+    positive_cases: int
+    negative_cases: int
     recall_at_3: float
     recall_at_5: float
+    false_answer_rate: float
+    abstention_accuracy: float
     results: tuple[RetrievalCaseResult, ...]
 
     @property
     def missed_at_3(self) -> tuple[str, ...]:
-        return tuple(result.id for result in self.results if not result.hit_at_3)
+        return tuple(
+            result.id
+            for result in self.results
+            if result.expected_answerable and not result.hit_at_3
+        )
 
     @property
     def missed_at_5(self) -> tuple[str, ...]:
-        return tuple(result.id for result in self.results if not result.hit_at_5)
+        return tuple(
+            result.id
+            for result in self.results
+            if result.expected_answerable and not result.hit_at_5
+        )
 
 
 def load_retrieval_dataset(
@@ -72,23 +89,32 @@ def load_retrieval_dataset(
     raw_cases = raw.get("cases")
     if not version or not isinstance(raw_cases, list) or not raw_cases:
         raise ValueError("Retrieval dataset must contain a version and non-empty cases")
-    cases = tuple(
-        RetrievalEvaluationCase(
+    cases = []
+    for item in raw_cases:
+        answerable = item.get("answerable", True)
+        if not isinstance(answerable, bool):
+            raise ValueError("Retrieval dataset answerable must be a boolean")
+        source_name = item.get("expected_source_name")
+        document_title = item.get("expected_document_title")
+        case = RetrievalEvaluationCase(
             id=str(item["id"]).strip(),
             query=str(item["query"]).strip(),
-            expected_source_name=str(item["expected_source_name"]).strip(),
-            expected_document_title=str(item["expected_document_title"]).strip(),
+            answerable=answerable,
+            expected_source_name=(None if source_name is None else str(source_name).strip()),
+            expected_document_title=(
+                None if document_title is None else str(document_title).strip()
+            ),
         )
-        for item in raw_cases
-    )
-    if any(
-        not case.id
-        or not case.query
-        or not case.expected_source_name
-        or not case.expected_document_title
-        for case in cases
-    ):
-        raise ValueError("Retrieval dataset cases cannot contain blank fields")
+        if not case.id or not case.query:
+            raise ValueError("Retrieval dataset cases cannot contain blank fields")
+        if case.answerable and (not case.expected_source_name or not case.expected_document_title):
+            raise ValueError("Answerable evaluation cases require an expected Document")
+        if not case.answerable and (
+            case.expected_source_name is not None or case.expected_document_title is not None
+        ):
+            raise ValueError("Negative evaluation cases cannot name an expected Document")
+        cases.append(case)
+    cases = tuple(cases)
     if len({case.id for case in cases}) != len(cases):
         raise ValueError("Retrieval dataset case IDs must be unique")
     return version, cases
@@ -106,6 +132,18 @@ def resolve_expected_documents(
 
     resolved = []
     for case in cases:
+        if not case.answerable:
+            resolved.append(
+                ResolvedRetrievalEvaluationCase(
+                    id=case.id,
+                    query=case.query,
+                    answerable=False,
+                    expected_document_id=None,
+                )
+            )
+            continue
+        assert case.expected_source_name is not None
+        assert case.expected_document_title is not None
         key = (case.expected_source_name, case.expected_document_title)
         document_ids = documents_by_key.get(key, [])
         if len(document_ids) != 1:
@@ -117,6 +155,7 @@ def resolve_expected_documents(
             ResolvedRetrievalEvaluationCase(
                 id=case.id,
                 query=case.query,
+                answerable=True,
                 expected_document_id=document_ids[0],
             )
         )
@@ -129,8 +168,9 @@ async def evaluate_retrieval(
     dataset_version: str,
     cases: tuple[ResolvedRetrievalEvaluationCase, ...],
     user_role: str,
+    relevance_policy: RelevancePolicy,
 ) -> RetrievalEvaluationReport:
-    """Run all cases once at top-5 and derive Recall@3 and Recall@5."""
+    """Run retrieval once and derive recall plus gate-level answer/refusal proxies."""
     if not cases:
         raise ValueError("Retrieval evaluation requires at least one case")
     case_results = []
@@ -141,22 +181,49 @@ async def evaluate_retrieval(
             filters=SearchFilters(),
             user_context=UserContext(role=user_role),
         )
-        document_ids = tuple(result.document_id for result in search_results)
-        titles = tuple(result.document_title for result in search_results)
+        relevant_results = relevance_policy.select(search_results)
+        document_ids = tuple(result.document_id for result in relevant_results)
+        titles = tuple(result.document_title for result in relevant_results)
         case_results.append(
             RetrievalCaseResult(
                 id=case.id,
-                hit_at_3=case.expected_document_id in document_ids[:3],
-                hit_at_5=case.expected_document_id in document_ids[:5],
+                expected_answerable=case.answerable,
+                would_call_model=bool(relevant_results),
+                hit_at_3=(case.answerable and case.expected_document_id in document_ids[:3]),
+                hit_at_5=(case.answerable and case.expected_document_id in document_ids[:5]),
                 retrieved_document_ids=document_ids,
                 retrieved_document_titles=titles,
             )
         )
     total = len(case_results)
+    positive_results = [result for result in case_results if result.expected_answerable]
+    negative_results = [result for result in case_results if not result.expected_answerable]
+    positive_total = len(positive_results)
+    negative_total = len(negative_results)
     return RetrievalEvaluationReport(
         dataset_version=dataset_version,
         total_cases=total,
-        recall_at_3=sum(result.hit_at_3 for result in case_results) / total,
-        recall_at_5=sum(result.hit_at_5 for result in case_results) / total,
+        positive_cases=positive_total,
+        negative_cases=negative_total,
+        recall_at_3=(
+            sum(result.hit_at_3 for result in positive_results) / positive_total
+            if positive_total
+            else 0.0
+        ),
+        recall_at_5=(
+            sum(result.hit_at_5 for result in positive_results) / positive_total
+            if positive_total
+            else 0.0
+        ),
+        false_answer_rate=(
+            sum(result.would_call_model for result in negative_results) / negative_total
+            if negative_total
+            else 0.0
+        ),
+        abstention_accuracy=(
+            sum(not result.would_call_model for result in negative_results) / negative_total
+            if negative_total
+            else 0.0
+        ),
         results=tuple(case_results),
     )

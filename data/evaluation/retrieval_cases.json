@@ -1,5 +1,5 @@
 {
-  "version": "phase-4-v2",
+  "version": "phase-5-v1",
   "cases": [
     {"id": "vpn-01", "query": "VPN server address", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
     {"id": "vpn-02", "query": "VPN connection times out", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
@@ -15,6 +15,9 @@
     {"id": "account-02", "query": "Account temporarily locked", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
     {"id": "account-03", "query": "Account verification prompts", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
     {"id": "account-04", "query": "Account local IT queue", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
-    {"id": "account-05", "query": "Account training error code", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"}
+    {"id": "account-05", "query": "Account training error code", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
+    {"id": "negative-01", "query": "What is the quantum printer policy?", "answerable": false},
+    {"id": "negative-02", "query": "What is today's cafeteria menu?", "answerable": false},
+    {"id": "negative-03", "query": "How do I file a payroll tax form?", "answerable": false}
   ]
 }

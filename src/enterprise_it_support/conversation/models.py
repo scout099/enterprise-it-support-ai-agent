@@ -63,6 +63,24 @@ class Message(Base):
             "AND total_tokens >= 0 AND cached_tokens >= 0 AND reasoning_tokens >= 0",
             name="ck_messages_nonnegative_tokens",
         ),
+        CheckConstraint(
+            "status IS NULL OR status IN ('succeeded', 'refused', 'failed')",
+            name="ck_messages_status",
+        ),
+        CheckConstraint(
+            "error_stage IS NULL OR error_stage IN "
+            "('retrieval', 'model', 'validation', 'citation')",
+            name="ck_messages_error_stage",
+        ),
+        CheckConstraint(
+            "(role = 'user' AND status IS NULL AND error_stage IS NULL "
+            "AND error_code IS NULL AND response IS NULL) OR "
+            "(role = 'assistant' AND status IN ('succeeded', 'refused') "
+            "AND error_stage IS NULL AND error_code IS NULL AND response IS NOT NULL) OR "
+            "(role = 'assistant' AND status = 'failed' AND error_stage IS NOT NULL "
+            "AND error_code IS NOT NULL AND response IS NULL)",
+            name="ck_messages_trace_outcome",
+        ),
         Index("ix_messages_conversation_created", "conversation_id", "created_at"),
         Index("ix_messages_request_id", "request_id"),
     )
@@ -86,7 +104,10 @@ class Message(Base):
     model_name: Mapped[str | None] = mapped_column(String(200))
     model_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     prompt_version: Mapped[str | None] = mapped_column(String(100))
-    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    status: Mapped[str | None] = mapped_column(String(20))
+    error_stage: Mapped[str | None] = mapped_column(String(20))
+    error_code: Mapped[str | None] = mapped_column(String(100))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

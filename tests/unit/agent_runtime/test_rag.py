@@ -11,13 +11,21 @@ from enterprise_it_support.agent_runtime.rag import (
     RAGAnswerService,
     RAGCitationValidationError,
 )
-from enterprise_it_support.conversation.repository import SavedTurn, StoredConversation
+from enterprise_it_support.conversation.repository import (
+    ErrorStage,
+    SavedTurn,
+    StoredConversation,
+    TurnStatus,
+)
 from enterprise_it_support.intelligence.model_gateway import (
     FakeModelGateway,
     ModelGatewayResponseError,
+    ModelGatewayTimeoutError,
+    ModelGatewayUnavailableError,
 )
 from enterprise_it_support.knowledge.retrieval import (
     Citation,
+    RelevancePolicy,
     RetrievalMethod,
     SearchResult,
 )
@@ -55,7 +63,13 @@ class FakeConversationStore:
         )
 
 
-def search_result(*, title: str = "VPN SOP", content: str = "Use the managed VPN profile"):
+def search_result(
+    *,
+    title: str = "VPN SOP",
+    content: str = "Use the managed VPN profile",
+    keyword_score: float | None = 0.2,
+    vector_similarity: float | None = 0.9,
+):
     chunk_id = uuid4()
     return SearchResult(
         chunk_id=chunk_id,
@@ -64,7 +78,9 @@ def search_result(*, title: str = "VPN SOP", content: str = "Use the managed VPN
         document_version=2,
         content=content,
         section_title="Configuration",
-        score=0.03,
+        rrf_score=0.03,
+        keyword_score=keyword_score,
+        vector_similarity=vector_similarity,
         retrieval_method=RetrievalMethod.HYBRID,
         citation=Citation(
             document_title=title,
@@ -98,6 +114,10 @@ async def test_service_answers_with_citation_materialized_from_retrieval() -> No
         retriever=retriever,
         model_gateway=model,
         conversation_store=store,
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
         top_k=5,
         max_context_chars=4000,
     )
@@ -111,9 +131,11 @@ async def test_service_answers_with_citation_materialized_from_retrieval() -> No
 
     assert turn.answer.citations[0].chunk_id == result.chunk_id
     assert turn.answer.citations[0].document_title == "VPN SOP"
-    assert store.saved[0]["retrieved_chunk_ids"] == (result.chunk_id,)
-    assert store.saved[0]["prompt_version"] == RAG_PROMPT_VERSION
-    assert store.saved[0]["token_usage"].total_tokens == 30
+    trace = store.saved[0]["trace"]
+    assert trace.retrieved_chunk_ids == (result.chunk_id,)
+    assert trace.model_metadata.prompt_version == RAG_PROMPT_VERSION
+    assert trace.model_metadata.usage.total_tokens == 30
+    assert trace.status is TurnStatus.SUCCEEDED
     assert "Answer only from the enterprise Context" in model.calls[0].messages[0].content
     assert "pretrained knowledge" in model.calls[0].messages[0].content
     assert "answerable=false" in model.calls[0].messages[0].content
@@ -131,6 +153,10 @@ async def test_service_refuses_without_evidence_and_does_not_call_model() -> Non
         retriever=retriever,
         model_gateway=model,
         conversation_store=store,
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
         top_k=5,
         max_context_chars=4000,
     )
@@ -146,8 +172,10 @@ async def test_service_refuses_without_evidence_and_does_not_call_model() -> Non
     assert turn.answer.citations == []
     assert "不会依据模型常识猜测" in turn.answer.answer
     assert model.calls == []
-    assert store.saved[0]["model_name"] == "not-called"
-    assert store.saved[0]["retrieved_chunk_ids"] == ()
+    trace = store.saved[0]["trace"]
+    assert trace.model_metadata.resolved_model == "not-called"
+    assert trace.retrieved_chunk_ids == ()
+    assert trace.status is TurnStatus.REFUSED
 
 
 @pytest.mark.asyncio
@@ -168,6 +196,10 @@ async def test_service_uses_deterministic_refusal_when_model_marks_evidence_insu
         retriever=FakeRetriever([search_result()]),
         model_gateway=FakeModelGateway([output]),
         conversation_store=FakeConversationStore(),
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
         top_k=5,
         max_context_chars=4000,
     )
@@ -192,6 +224,10 @@ async def test_service_rejects_citation_outside_retrieved_context() -> None:
         retriever=FakeRetriever([search_result()]),
         model_gateway=FakeModelGateway([grounded_output(["E99"])]),
         conversation_store=store,
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
         top_k=5,
         max_context_chars=4000,
     )
@@ -204,16 +240,21 @@ async def test_service_rejects_citation_outside_retrieved_context() -> None:
             request_id="rag-invalid-citation",
         )
 
-    assert store.saved == []
+    assert store.saved[0]["trace"].status is TurnStatus.FAILED
+    assert store.saved[0]["trace"].error_stage is ErrorStage.CITATION
 
 
 @pytest.mark.asyncio
-async def test_service_propagates_malformed_model_output_without_saving() -> None:
+async def test_service_propagates_malformed_model_output_after_saving_failed_trace() -> None:
     store = FakeConversationStore()
     service = RAGAnswerService(
         retriever=FakeRetriever([search_result()]),
         model_gateway=FakeModelGateway([{"summary": "missing fields"}]),
         conversation_store=store,
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
         top_k=5,
         max_context_chars=4000,
     )
@@ -226,7 +267,8 @@ async def test_service_propagates_malformed_model_output_without_saving() -> Non
             request_id="rag-malformed",
         )
 
-    assert store.saved == []
+    assert store.saved[0]["trace"].status is TurnStatus.FAILED
+    assert store.saved[0]["trace"].error_stage is ErrorStage.VALIDATION
 
 
 @pytest.mark.asyncio
@@ -236,6 +278,10 @@ async def test_service_bounds_serialized_context_before_model_call() -> None:
         retriever=FakeRetriever([search_result(content='"quoted" VPN evidence ' * 500)]),
         model_gateway=model,
         conversation_store=FakeConversationStore(),
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
         top_k=5,
         max_context_chars=1000,
     )
@@ -255,3 +301,149 @@ async def test_service_bounds_serialized_context_before_model_call() -> None:
     )
     assert len(serialized_context) <= 1000
     assert len(payload["context"][0]["content"]) >= 100
+
+
+@pytest.mark.asyncio
+async def test_service_refuses_irrelevant_results_from_nonempty_knowledge_base() -> None:
+    retriever = FakeRetriever(
+        [
+            search_result(
+                title="VPN SOP",
+                content="Use the managed VPN profile.",
+                keyword_score=None,
+                vector_similarity=0.99,
+            )
+        ]
+    )
+    model = FakeModelGateway([])
+    store = FakeConversationStore()
+    service = RAGAnswerService(
+        retriever=retriever,
+        model_gateway=model,
+        conversation_store=store,
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
+        top_k=5,
+        max_context_chars=4000,
+    )
+
+    turn = await service.ask(
+        question="What is the quantum printer policy?",
+        user_role="employee",
+        conversation_id=None,
+        request_id="rag-irrelevant",
+    )
+
+    assert turn.answer.confidence == 0
+    assert turn.answer.citations == []
+    assert model.calls == []
+    assert store.saved[0]["trace"].retrieved_chunk_ids == (retriever.results[0].chunk_id,)
+
+
+@pytest.mark.asyncio
+async def test_service_sends_only_relevant_results_to_model_context() -> None:
+    relevant = search_result(
+        title="VPN SOP",
+        content="Use vpn.example.test as the managed VPN server.",
+        keyword_score=0.2,
+    )
+    distractors = [
+        search_result(
+            title=f"Distractor {index}",
+            content="Unrelated calendar training.",
+            keyword_score=None,
+            vector_similarity=0.99,
+        )
+        for index in range(3)
+    ]
+    model = FakeModelGateway([grounded_output()])
+    service = RAGAnswerService(
+        retriever=FakeRetriever([*distractors, relevant]),
+        model_gateway=model,
+        conversation_store=FakeConversationStore(),
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
+        top_k=5,
+        max_context_chars=4000,
+    )
+
+    await service.ask(
+        question="Which VPN server should I use?",
+        user_role="employee",
+        conversation_id=None,
+        request_id="rag-filtered-context",
+    )
+
+    payload = json.loads(model.calls[0].messages[1].content)
+    assert [item["chunk_id"] for item in payload["context"]] == [str(relevant.chunk_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected_exception", "error_stage", "error_code"),
+    [
+        (
+            ModelGatewayTimeoutError("sensitive timeout detail"),
+            ModelGatewayTimeoutError,
+            ErrorStage.MODEL,
+            "model_timeout",
+        ),
+        (
+            ModelGatewayUnavailableError("sensitive provider detail"),
+            ModelGatewayUnavailableError,
+            ErrorStage.MODEL,
+            "model_unavailable",
+        ),
+        (
+            {"summary": "missing fields"},
+            ModelGatewayResponseError,
+            ErrorStage.VALIDATION,
+            "model_response_invalid",
+        ),
+        (
+            grounded_output(["E99"]),
+            RAGCitationValidationError,
+            ErrorStage.CITATION,
+            "citation_invalid",
+        ),
+    ],
+)
+async def test_service_persists_safe_failed_trace_for_model_and_validation_errors(
+    outcome,
+    expected_exception,
+    error_stage: ErrorStage,
+    error_code: str,
+) -> None:
+    store = FakeConversationStore()
+    service = RAGAnswerService(
+        retriever=FakeRetriever([search_result()]),
+        model_gateway=FakeModelGateway([outcome]),
+        conversation_store=store,
+        relevance_policy=RelevancePolicy(
+            min_keyword_score=0.05,
+            min_vector_similarity=None,
+        ),
+        top_k=5,
+        max_context_chars=4000,
+    )
+
+    with pytest.raises(expected_exception):
+        await service.ask(
+            question="VPN question",
+            user_role="employee",
+            conversation_id=None,
+            request_id=f"rag-{error_code}",
+        )
+
+    assert len(store.saved) == 1
+    trace = store.saved[0]["trace"]
+    assert trace.status is TurnStatus.FAILED
+    assert trace.error_stage is error_stage
+    assert trace.error_code == error_code
+    assert trace.response is None
+    assert trace.retrieved_chunk_ids
+    assert "sensitive" not in trace.assistant_content

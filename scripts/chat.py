@@ -5,7 +5,11 @@ import asyncio
 import json
 from uuid import UUID, uuid4
 
-from apps.dependencies import build_knowledge_retriever, build_model_gateway
+from apps.dependencies import (
+    build_knowledge_retriever,
+    build_model_gateway,
+    build_relevance_policy,
+)
 
 from enterprise_it_support.agent_runtime.rag import RAGAnswerService
 from enterprise_it_support.conversation.repository import ConversationRepository
@@ -61,6 +65,7 @@ async def run(args: argparse.Namespace, settings: Settings | None = None) -> int
             ),
             model_gateway=build_model_gateway(resolved_settings),
             conversation_store=ConversationRepository(database.session_factory),
+            relevance_policy=build_relevance_policy(resolved_settings),
             top_k=resolved_settings.rag_top_k,
             max_context_chars=resolved_settings.rag_max_context_chars,
         )

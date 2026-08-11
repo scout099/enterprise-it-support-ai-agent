@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
 from enterprise_it_support.agent_runtime.rag import AnswerCitation, RAGAnswer
+from enterprise_it_support.conversation.repository import ErrorStage, TurnStatus
 
 
 class ChatAskRequest(BaseModel):
@@ -69,6 +70,9 @@ class ConversationMessageResponse(BaseModel):
     model_attempts: int
     prompt_version: str | None
     response: RAGAnswer | dict[str, Any] | None
+    status: TurnStatus | None
+    error_stage: ErrorStage | None
+    error_code: str | None
     latency_ms: int | None
     token_usage: TokenUsageResponse
     request_id: str

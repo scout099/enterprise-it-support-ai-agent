@@ -7,10 +7,17 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from apps.api.main import create_app
+from apps.dependencies import build_relevance_policy
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from enterprise_it_support.intelligence.model_gateway import ModelGatewayResponseError
+from enterprise_it_support.agent_runtime.rag import RAGAnswerService
+from enterprise_it_support.intelligence.model_gateway import (
+    FakeModelGateway,
+    ModelGatewayResponseError,
+    ModelGatewayTimeoutError,
+    ModelGatewayUnavailableError,
+)
 from enterprise_it_support.knowledge.retrieval import RetrievalUnavailableError
 from enterprise_it_support.platform.config import Environment, Settings, get_settings
 from enterprise_it_support.platform.database import DatabaseManager
@@ -564,6 +571,37 @@ def test_chat_api_answers_vpn_outlook_and_account_with_persisted_real_citations(
 
 
 @pytest.mark.integration
+def test_fake_chat_prefers_stronger_keyword_evidence_over_vpn_distractor(
+    knowledge_api_client: TestClient,
+) -> None:
+    upload_and_index(
+        knowledge_api_client,
+        filename="vpn_configuration_sop.md",
+        media_type="text/markdown",
+        title="VPN Configuration SOP",
+    )
+    upload_and_index(
+        knowledge_api_client,
+        filename="vpn_security_notice.txt",
+        media_type="text/plain",
+        title="VPN Security Notice",
+    )
+
+    response = knowledge_api_client.post(
+        "/chat/ask",
+        json={
+            "question": "How do I configure the company VPN?",
+            "user_role": "employee",
+        },
+    )
+
+    assert response.status_code == 200
+    answer = response.json()
+    assert answer["citations"][0]["document_title"] == "VPN Configuration SOP"
+    assert "vpn.demo.invalid" in answer["answer"]
+
+
+@pytest.mark.integration
 def test_chat_api_refuses_without_evidence_and_persists_zero_token_trace(
     knowledge_api_client: TestClient,
 ) -> None:
@@ -587,6 +625,37 @@ def test_chat_api_refuses_without_evidence_and_persists_zero_token_trace(
     ).json()
     assert conversation["messages"][1]["retrieved_chunk_ids"] == []
     assert conversation["messages"][1]["model_name"] == "not-called"
+
+
+@pytest.mark.integration
+def test_chat_api_refuses_irrelevant_vector_neighbor_in_nonempty_knowledge_base(
+    knowledge_api_client: TestClient,
+) -> None:
+    upload_and_index(
+        knowledge_api_client,
+        filename="vpn_configuration_sop.md",
+        media_type="text/markdown",
+        title="Only VPN SOP",
+    )
+
+    response = knowledge_api_client.post(
+        "/chat/ask",
+        json={"question": "What is the quantum printer policy?", "user_role": "employee"},
+        headers={"X-Request-ID": "chat-irrelevant-neighbor"},
+    )
+
+    assert response.status_code == 200
+    answer = response.json()
+    assert answer["citations"] == []
+    assert answer["confidence"] == 0
+    assert answer["model_name"] == "not-called"
+    assert answer["token_usage"]["total_tokens"] == 0
+
+    conversation = knowledge_api_client.get(
+        f"/chat/conversations/{answer['conversation_id']}",
+        params={"user_role": "employee"},
+    ).json()
+    assert conversation["messages"][1]["retrieved_chunk_ids"]
 
 
 @pytest.mark.integration
@@ -697,3 +766,114 @@ def test_chat_api_maps_malformed_model_output_to_safe_502(test_settings: Setting
         }
     }
     assert "fictional-malformed-model-secret" not in response.text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("failure_kind", "outcome", "expected_status", "error_stage", "error_code"),
+    [
+        ("retrieval", None, 503, "retrieval", "retrieval_unavailable"),
+        (
+            "model",
+            ModelGatewayTimeoutError("fictional-timeout-secret"),
+            503,
+            "model",
+            "model_timeout",
+        ),
+        (
+            "model",
+            ModelGatewayUnavailableError("fictional-provider-secret"),
+            503,
+            "model",
+            "model_unavailable",
+        ),
+        (
+            "model",
+            {"summary": "missing fields"},
+            502,
+            "validation",
+            "model_response_invalid",
+        ),
+        (
+            "model",
+            {
+                "summary": "VPN answer",
+                "answer": "Use the managed VPN profile.",
+                "diagnosis": ["企业知识库: VPN evidence found."],
+                "evidence_ids": ["E99"],
+                "limitations": [],
+                "next_steps": ["企业知识库: Follow the VPN SOP."],
+                "confidence": 0.8,
+                "answerable": True,
+            },
+            502,
+            "citation",
+            "citation_invalid",
+        ),
+    ],
+)
+def test_chat_api_persists_safe_failed_trace_for_every_failure_stage(
+    knowledge_api_client: TestClient,
+    failure_kind: str,
+    outcome,
+    expected_status: int,
+    error_stage: str,
+    error_code: str,
+) -> None:
+    if failure_kind == "model":
+        upload_and_index(
+            knowledge_api_client,
+            filename="vpn_configuration_sop.md",
+            media_type="text/markdown",
+            title="VPN Failure Trace SOP",
+        )
+    settings = knowledge_api_client.app.state.settings
+    retriever = (
+        UnavailableRetriever()
+        if failure_kind == "retrieval"
+        else knowledge_api_client.app.state.knowledge_retriever
+    )
+    knowledge_api_client.app.state.rag_answer_service = RAGAnswerService(
+        retriever=retriever,
+        model_gateway=FakeModelGateway([] if outcome is None else [outcome]),
+        conversation_store=knowledge_api_client.app.state.conversation_repository,
+        relevance_policy=build_relevance_policy(settings),
+        top_k=settings.rag_top_k,
+        max_context_chars=settings.rag_max_context_chars,
+    )
+    request_id = f"failed-{error_code}"
+
+    response = knowledge_api_client.post(
+        "/chat/ask",
+        json={"question": "How do I configure VPN?", "user_role": "employee"},
+        headers={"X-Request-ID": request_id},
+    )
+
+    assert response.status_code == expected_status
+    assert "fictional" not in response.text
+
+    engine = create_engine(settings.active_database_url)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT status, error_stage, error_code, response, model_attempts, "
+                    "total_tokens, request_id, content FROM messages "
+                    "WHERE request_id = :request_id AND role = 'assistant'"
+                ),
+                {"request_id": request_id},
+            ).one()
+    finally:
+        engine.dispose()
+
+    assert row.status == "failed"
+    assert row.error_stage == error_stage
+    assert row.error_code == error_code
+    assert row.response is None
+    assert row.request_id == request_id
+    assert "fictional" not in row.content
+    if failure_kind == "retrieval":
+        assert row.model_attempts == 0
+        assert row.total_tokens == 0
+    else:
+        assert row.model_attempts == 1

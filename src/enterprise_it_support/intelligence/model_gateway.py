@@ -22,6 +22,15 @@ Sleeper = Callable[[float], Awaitable[None]]
 class ModelGatewayError(RuntimeError):
     """Base class for safe model-boundary failures."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        metadata: "ModelCallMetadata | None" = None,
+    ) -> None:
+        super().__init__(message)
+        self.metadata = metadata
+
 
 class ModelGatewayTimeoutError(ModelGatewayError):
     """Raised after all bounded model attempts time out."""
@@ -142,12 +151,15 @@ class FakeModelGateway:
         else:
             raise ModelGatewayUnavailableError("Fake model has no queued response")
         if isinstance(outcome, Exception):
+            if isinstance(outcome, ModelGatewayError) and outcome.metadata is None:
+                outcome.metadata = self._metadata(prompt_version)
             raise outcome
         try:
             value = response_schema.model_validate(outcome)
         except ValidationError as exception:
             raise ModelGatewayResponseError(
-                "Model response failed schema validation"
+                "Model response failed schema validation",
+                metadata=self._metadata(prompt_version),
             ) from exception
         return StructuredModelResponse(
             value=value,
@@ -159,6 +171,16 @@ class FakeModelGateway:
                 usage=self._usage,
                 attempts=1,
             ),
+        )
+
+    def _metadata(self, prompt_version: str) -> ModelCallMetadata:
+        return ModelCallMetadata(
+            provider="fake",
+            configured_model=self._model_name,
+            resolved_model=self._model_name,
+            prompt_version=prompt_version,
+            usage=self._usage,
+            attempts=1,
         )
 
 
@@ -235,13 +257,17 @@ class OpenAICompatibleModelGateway:
                 )
             except (TimeoutError, APITimeoutError) as exception:
                 if attempt == self._max_attempts:
-                    raise ModelGatewayTimeoutError("Model request timed out") from exception
+                    raise ModelGatewayTimeoutError(
+                        "Model request timed out",
+                        metadata=self._failure_metadata(prompt_version, attempt),
+                    ) from exception
                 await self._backoff(attempt)
                 continue
             except (APIConnectionError, RateLimitError) as exception:
                 if attempt == self._max_attempts:
                     raise ModelGatewayUnavailableError(
-                        "Model provider is temporarily unavailable"
+                        "Model provider is temporarily unavailable",
+                        metadata=self._failure_metadata(prompt_version, attempt),
                     ) from exception
                 await self._backoff(attempt)
                 continue
@@ -250,10 +276,14 @@ class OpenAICompatibleModelGateway:
                     await self._backoff(attempt)
                     continue
                 raise ModelGatewayUnavailableError(
-                    "Model provider rejected the request"
+                    "Model provider rejected the request",
+                    metadata=self._failure_metadata(prompt_version, attempt),
                 ) from exception
             except Exception as exception:
-                raise ModelGatewayUnavailableError("Model provider request failed") from exception
+                raise ModelGatewayUnavailableError(
+                    "Model provider request failed",
+                    metadata=self._failure_metadata(prompt_version, attempt),
+                ) from exception
 
             return self._validate_response(
                 response,
@@ -267,6 +297,22 @@ class OpenAICompatibleModelGateway:
     async def _backoff(self, attempt: int) -> None:
         await self._sleeper(min(self._retry_backoff_seconds * (2 ** (attempt - 1)), 2.0))
 
+    def _failure_metadata(
+        self,
+        prompt_version: str,
+        attempts: int,
+        *,
+        response: Any | None = None,
+    ) -> ModelCallMetadata:
+        return ModelCallMetadata(
+            provider="openai_compatible",
+            configured_model=self._model,
+            resolved_model=str(getattr(response, "model", self._model)),
+            prompt_version=prompt_version,
+            usage=self._token_usage(response),
+            attempts=attempts,
+        )
+
     def _validate_response(
         self,
         response: Any,
@@ -275,6 +321,11 @@ class OpenAICompatibleModelGateway:
         prompt_version: str,
         attempts: int,
     ) -> StructuredModelResponse[ResponseT]:
+        metadata = self._failure_metadata(
+            prompt_version,
+            attempts,
+            response=response,
+        )
         try:
             content = response.choices[0].message.content
             if not content:
@@ -289,9 +340,14 @@ class OpenAICompatibleModelGateway:
             ValidationError,
         ) as exception:
             raise ModelGatewayResponseError(
-                "Model response failed schema validation"
+                "Model response failed schema validation",
+                metadata=metadata,
             ) from exception
 
+        return StructuredModelResponse(value=value, metadata=metadata)
+
+    @staticmethod
+    def _token_usage(response: Any | None) -> TokenUsage:
         usage = getattr(response, "usage", None)
         input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
@@ -301,20 +357,10 @@ class OpenAICompatibleModelGateway:
         )
         prompt_details = getattr(usage, "prompt_tokens_details", None)
         completion_details = getattr(usage, "completion_tokens_details", None)
-        return StructuredModelResponse(
-            value=value,
-            metadata=ModelCallMetadata(
-                provider="openai_compatible",
-                configured_model=self._model,
-                resolved_model=str(getattr(response, "model", self._model)),
-                prompt_version=prompt_version,
-                usage=TokenUsage(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=total_tokens,
-                    cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0),
-                    reasoning_tokens=int(getattr(completion_details, "reasoning_tokens", 0) or 0),
-                ),
-                attempts=attempts,
-            ),
+        return TokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0),
+            reasoning_tokens=int(getattr(completion_details, "reasoning_tokens", 0) or 0),
         )

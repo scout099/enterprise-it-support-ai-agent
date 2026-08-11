@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -9,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from enterprise_it_support.conversation.models import Conversation, Message
-from enterprise_it_support.intelligence.model_gateway import TokenUsage
+from enterprise_it_support.intelligence.model_gateway import ModelCallMetadata, TokenUsage
 
 
 class ConversationNotFoundError(LookupError):
@@ -18,6 +19,40 @@ class ConversationNotFoundError(LookupError):
 
 class ConversationRoleMismatchError(PermissionError):
     """Raised when a caller attempts to continue a conversation under another role."""
+
+
+class TurnStatus(StrEnum):
+    """Persisted outcome of one accepted chat turn."""
+
+    SUCCEEDED = "succeeded"
+    REFUSED = "refused"
+    FAILED = "failed"
+
+
+class ErrorStage(StrEnum):
+    """Safe stage taxonomy for failed grounded-answer attempts."""
+
+    RETRIEVAL = "retrieval"
+    MODEL = "model"
+    VALIDATION = "validation"
+    CITATION = "citation"
+
+
+@dataclass(frozen=True)
+class TurnTrace:
+    """Complete observable outcome persisted independently from a successful answer."""
+
+    question: str
+    retrieval_query: str
+    retrieved_chunk_ids: tuple[UUID, ...]
+    model_metadata: ModelCallMetadata
+    assistant_content: str
+    response: dict[str, Any] | None
+    latency_ms: int
+    request_id: str
+    status: TurnStatus
+    error_stage: ErrorStage | None = None
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +69,9 @@ class StoredMessage:
     model_attempts: int
     prompt_version: str | None
     response: dict[str, Any] | None
+    status: TurnStatus | None
+    error_stage: ErrorStage | None
+    error_code: str | None
     latency_ms: int | None
     token_usage: TokenUsage
     request_id: str
@@ -67,18 +105,7 @@ class ConversationRepository:
         *,
         conversation_id: UUID | None,
         user_role: str,
-        question: str,
-        retrieval_query: str,
-        retrieved_chunk_ids: tuple[UUID, ...],
-        model_provider: str,
-        configured_model: str,
-        model_name: str,
-        model_attempts: int,
-        prompt_version: str,
-        response: dict[str, Any],
-        latency_ms: int,
-        token_usage: TokenUsage,
-        request_id: str,
+        trace: TurnTrace,
     ) -> SavedTurn:
         async with self._session_factory() as session, session.begin():
             if conversation_id is None:
@@ -105,29 +132,32 @@ class ConversationRepository:
                 conversation_id=conversation.id,
                 sequence_number=starting_sequence,
                 role="user",
-                content=question,
-                request_id=request_id,
+                content=trace.question,
+                request_id=trace.request_id,
             )
             assistant_message = Message(
                 conversation_id=conversation.id,
                 sequence_number=starting_sequence + 1,
                 role="assistant",
-                content=str(response["answer"]),
-                retrieval_query=retrieval_query,
-                retrieved_chunk_ids=list(retrieved_chunk_ids),
-                model_provider=model_provider,
-                configured_model=configured_model,
-                model_name=model_name,
-                model_attempts=model_attempts,
-                prompt_version=prompt_version,
-                response=response,
-                latency_ms=latency_ms,
-                input_tokens=token_usage.input_tokens,
-                output_tokens=token_usage.output_tokens,
-                total_tokens=token_usage.total_tokens,
-                cached_tokens=token_usage.cached_tokens,
-                reasoning_tokens=token_usage.reasoning_tokens,
-                request_id=request_id,
+                content=trace.assistant_content,
+                retrieval_query=trace.retrieval_query,
+                retrieved_chunk_ids=list(trace.retrieved_chunk_ids),
+                model_provider=trace.model_metadata.provider,
+                configured_model=trace.model_metadata.configured_model,
+                model_name=trace.model_metadata.resolved_model,
+                model_attempts=trace.model_metadata.attempts,
+                prompt_version=trace.model_metadata.prompt_version,
+                response=trace.response,
+                status=trace.status.value,
+                error_stage=(None if trace.error_stage is None else trace.error_stage.value),
+                error_code=trace.error_code,
+                latency_ms=trace.latency_ms,
+                input_tokens=trace.model_metadata.usage.input_tokens,
+                output_tokens=trace.model_metadata.usage.output_tokens,
+                total_tokens=trace.model_metadata.usage.total_tokens,
+                cached_tokens=trace.model_metadata.usage.cached_tokens,
+                reasoning_tokens=trace.model_metadata.usage.reasoning_tokens,
+                request_id=trace.request_id,
             )
             conversation.updated_at = datetime.now(UTC)
             session.add_all([user_message, assistant_message])
@@ -173,6 +203,9 @@ class ConversationRepository:
             model_attempts=message.model_attempts,
             prompt_version=message.prompt_version,
             response=message.response,
+            status=(None if message.status is None else TurnStatus(message.status)),
+            error_stage=(None if message.error_stage is None else ErrorStage(message.error_stage)),
+            error_code=message.error_code,
             latency_ms=message.latency_ms,
             token_usage=TokenUsage(
                 input_tokens=message.input_tokens,

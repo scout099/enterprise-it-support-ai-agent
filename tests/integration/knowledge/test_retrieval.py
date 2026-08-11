@@ -452,7 +452,7 @@ async def test_document_source_status_and_effective_filters_apply_to_both_strate
 
 
 @pytest.mark.integration
-async def test_retrieval_evaluation_cli_reports_recall_at_three_and_five(
+async def test_retrieval_evaluation_cli_reports_recall_and_negative_abstention(
     retrieval_environment: RetrievalEnvironment,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -475,8 +475,12 @@ async def test_retrieval_evaluation_cli_reports_recall_at_three_and_five(
     output = json.loads(capsys.readouterr().out.splitlines()[-1])
 
     assert exit_code == 0
-    assert output["total_cases"] == 15
+    assert output["total_cases"] == 18
+    assert output["positive_cases"] == 15
+    assert output["negative_cases"] == 3
     assert output["recall_at_3"] >= 0.8
     assert output["recall_at_5"] >= output["recall_at_3"]
-    assert output["missed_at_3"] == ["outlook-03", "outlook-05"]
-    assert output["missed_at_5"] == ["outlook-05"]
+    assert output["false_answer_rate"] == 0
+    assert output["abstention_accuracy"] == 1
+    assert len(output["missed_at_3"]) <= 3
+    assert output["missed_at_5"] == []

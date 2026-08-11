@@ -50,7 +50,9 @@ async def search_knowledge(
             document_version=result.document_version,
             content=result.content,
             section_title=result.section_title,
-            score=result.score,
+            rrf_score=result.rrf_score,
+            keyword_score=result.keyword_score,
+            vector_similarity=result.vector_similarity,
             retrieval_method=result.retrieval_method,
             citation=CitationResponse(**result.citation.__dict__),
         )

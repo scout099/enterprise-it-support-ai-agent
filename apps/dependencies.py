@@ -20,7 +20,12 @@ from enterprise_it_support.knowledge.indexing import (
     IndexingRepository,
     IndexingService,
 )
-from enterprise_it_support.knowledge.retrieval import KnowledgeRetriever, RetrievalRepository
+from enterprise_it_support.knowledge.retrieval import (
+    KnowledgeRetriever,
+    RelevancePolicy,
+    RetrievalRepository,
+    extract_keyword_terms,
+)
 from enterprise_it_support.platform.config import (
     EmbeddingProviderType,
     ModelProviderType,
@@ -96,13 +101,46 @@ def build_model_gateway(settings: Settings) -> ModelGateway:
     )
 
 
+def build_relevance_policy(settings: Settings) -> RelevancePolicy:
+    """Build thresholds calibrated for the configured Embedding Profile."""
+    vector_threshold = (
+        None
+        if settings.embedding_provider is EmbeddingProviderType.FAKE
+        else settings.rag_min_vector_similarity
+    )
+    return RelevancePolicy(
+        min_keyword_score=settings.rag_min_keyword_score,
+        min_vector_similarity=vector_threshold,
+    )
+
+
 def _fake_rag_response(call: FakeModelCall) -> dict[str, object]:
-    """Produce a repeatable grounded local demo response from the first Context item."""
+    """Produce a repeatable local answer from the strongest keyword-overlap evidence."""
     try:
         payload = json.loads(call.messages[-1].content)
         context = payload["context"]
-        evidence = context[0]
-    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exception:
+        question_terms = set(extract_keyword_terms(str(payload["question"])))
+        evidence = max(
+            context,
+            key=lambda item: (
+                len(
+                    question_terms
+                    & set(
+                        extract_keyword_terms(
+                            " ".join(
+                                (
+                                    str(item["document_title"]),
+                                    str(item["section_title"] or ""),
+                                    str(item["content"]),
+                                )
+                            )
+                        )
+                    )
+                ),
+                float(item["keyword_score"]) if item["keyword_score"] is not None else -1.0,
+            ),
+        )
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exception:
         raise ValueError("Fake RAG model received an invalid Context payload") from exception
 
     content = " ".join(str(evidence["content"]).split())

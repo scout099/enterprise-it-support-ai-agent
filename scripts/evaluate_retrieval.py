@@ -1,11 +1,15 @@
-"""Run the Phase 4 Retrieval dataset and print Recall@3/Recall@5 as JSON."""
+"""Run the Phase 5 retrieval/relevance dataset and print deterministic gate metrics."""
 
 import argparse
 import asyncio
 import json
 from pathlib import Path
 
-from apps.dependencies import build_indexing_service, build_knowledge_retriever
+from apps.dependencies import (
+    build_indexing_service,
+    build_knowledge_retriever,
+    build_relevance_policy,
+)
 
 from enterprise_it_support.evaluation.retrieval import (
     evaluate_retrieval,
@@ -113,14 +117,20 @@ async def run(
             dataset_version=dataset_version,
             cases=resolved_cases,
             user_role=args.user_role,
+            relevance_policy=build_relevance_policy(resolved_settings),
         )
         print(
             json.dumps(
                 {
                     "dataset_version": report.dataset_version,
                     "total_cases": report.total_cases,
+                    "positive_cases": report.positive_cases,
+                    "negative_cases": report.negative_cases,
                     "recall_at_3": report.recall_at_3,
                     "recall_at_5": report.recall_at_5,
+                    "false_answer_rate": report.false_answer_rate,
+                    "false_answer_rate_scope": "relevance_gate_proxy",
+                    "abstention_accuracy": report.abstention_accuracy,
                     "missed_at_3": report.missed_at_3,
                     "missed_at_5": report.missed_at_5,
                 },

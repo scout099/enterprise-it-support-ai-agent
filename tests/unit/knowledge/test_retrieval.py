@@ -111,6 +111,9 @@ async def test_hybrid_search_uses_rrf_deduplicates_and_honors_top_k() -> None:
     assert len({result.chunk_id for result in results}) == 2
     assert results[0].chunk_id == shared_keyword.chunk_id
     assert results[0].retrieval_method is RetrievalMethod.HYBRID
+    assert results[0].rrf_score == pytest.approx(2 / 61)
+    assert results[0].keyword_score == 0.9
+    assert results[0].vector_similarity == 0.9
     assert results[0].citation.chunk_id == results[0].chunk_id
     assert results[0].citation.document_title == "VPN Guide"
     assert results[0].citation.document_version == 2

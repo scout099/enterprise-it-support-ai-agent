@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     model_max_output_tokens: int = Field(default=1200, ge=1, le=16000)
     rag_top_k: int = Field(default=5, ge=1, le=20)
     rag_max_context_chars: int = Field(default=12000, ge=1000, le=100000)
+    rag_min_keyword_score: float = Field(default=0.001, ge=0)
+    rag_min_vector_similarity: float = Field(default=0.75, ge=-1, le=1)
+    rag_vector_threshold_profile: str | None = Field(default=None, max_length=400)
 
     @model_validator(mode="after")
     def require_isolated_test_database(self) -> "Settings":
@@ -100,6 +103,13 @@ class Settings(BaseSettings):
         ):
             raise ValueError("OpenAI embedding provider requires an API key")
         if (
+            self.embedding_provider is EmbeddingProviderType.OPENAI
+            and self.rag_vector_threshold_profile != self.embedding_profile_key
+        ):
+            raise ValueError(
+                "OpenAI vector relevance threshold must be bound to the active embedding profile"
+            )
+        if (
             self.environment is Environment.TEST
             and self.model_provider is not ModelProviderType.FAKE
         ):
@@ -117,6 +127,11 @@ class Settings(BaseSettings):
             assert self.test_database_url is not None
             return self.test_database_url.get_secret_value()
         return self.database_url.get_secret_value()
+
+    @property
+    def embedding_profile_key(self) -> str:
+        """Return the exact model, dimension, and version used to calibrate relevance."""
+        return f"{self.embedding_model}:{self.embedding_dimension}:{self.embedding_version}"
 
 
 @lru_cache
