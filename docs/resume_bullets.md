@@ -6,7 +6,7 @@
 
 - 基于 FastAPI、LangGraph、PostgreSQL/pgvector 构建 Enterprise IT Support AI Agent，打通知识导入、混合检索、可信 RAG、3 类故障诊断、本地工单与 Human-in-the-loop 审批，使用 13 个 Alembic revision 管理可恢复数据演进。
 - 设计统一 Tool Registry/Gateway，治理 7 个只读 Mock IT 工具及本地写工具，落实严格输入/输出 Schema、RBAC、R0–R4 风险策略、timeout/retry、幂等确认与脱敏审计，并显式禁止 Shell/Python/SQL 任意执行。
-- 建立 30-case Agent Evaluation 与 245 项 pytest 回归体系，覆盖 Retrieval、Citation、意图、工具参数、工作流和禁止动作；最近确认基线达到 Recall@3/5 1.0、Citation Validity 1.0、Prohibited Action Rate 0.0。
+- 建立 30-case Agent Evaluation 与 251 项 pytest 回归体系，覆盖 Retrieval、Citation、意图、工具参数、工作流和禁止动作；最近确认基线达到 Recall@3/5 1.0、Refusal Correctness 1.0、Citation Validity 1.0、Prohibited Action Rate 0.0。
 
 ## AI 产品实习
 
@@ -22,7 +22,7 @@
 
 ## 使用提醒
 
-- `245 tests` 来自 2026-08-05 Phase 12 本地完整回归；后续增删测试时必须同步更新；
+- `251 tests` 来自 2026-08-11 Phase 12 发布收尾本地完整回归；后续增删测试时必须同步更新；
 - 不要写“提升工单解决率 X%”，因为 Dashboard 使用虚构 seed，不是生产前后对照；
 - 不要写“接入 Microsoft/ServiceNow”，当前只有 Mock Adapter 和本地工单；
 - 面试时准备解释一个数字的定义、分母、数据来源和限制，而不只背诵 Bullet。

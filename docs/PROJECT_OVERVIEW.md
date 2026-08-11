@@ -25,7 +25,7 @@ Markdown/TXT/PDF
 
 当前完成到 Phase 12：在 Phase 1–11 的完整业务闭环上补齐 FastAPI/Streamlit 非 root 镜像、PostgreSQL/pgvector Compose、安全单次 migration、GitHub Actions、secret/任意执行门禁、Prompt Injection 与上传/越权回归，以及公开作品集所需 README、Demo、面试和简历材料。Streamlit 仍只通过 HTTP 调用 FastAPI；默认 Fake Provider 和固定虚构 seed 让完整演示不依赖真实企业账户或付费 API。
 
-交付路径为：`Docker Compose → db healthy → one-shot migration → API ready → UI healthy`。CI 对应检查 Ruff、真实 PostgreSQL/pgvector pytest、migration drift、30-case Evaluation、Gitleaks 和两个 Docker build。本地 245 项测试、两个镜像、Compose 健康检查、幂等 seed、Evaluation Gate 与工作区/Git 历史 secret scan 已通过；GitHub-hosted workflow 仍需在提交/推送后首次确认。
+交付路径为：`Docker Compose → db healthy → one-shot migration → API ready → UI healthy`。CI 对应检查 Ruff、真实 PostgreSQL/pgvector pytest、migration drift、30-case Evaluation、Gitleaks、Python dependency audit 和两个 Docker build；第三方 Actions 与 pgvector 镜像使用不可变 SHA/digest，Dependabot 提供受控更新。本地 251 项测试、两个镜像、全新数据卷 Compose 健康检查、幂等 seed、零失败 Evaluation Gate、依赖漏洞扫描与工作区/Git 历史 secret scan 已通过；GitHub-hosted workflow 仍需在 push 后首次确认。
 
 - `docs/CURRENT_STATE.md`：当前可运行事实；
 - `docs/ROADMAP.md`：阶段状态与后续边界；

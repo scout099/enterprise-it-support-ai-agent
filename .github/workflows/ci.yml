@@ -28,30 +28,44 @@ jobs:
     name: Ruff and package checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - name: Install project
-        run: python -m pip install --no-build-isolation '.[dev]'
+        run: python -m pip install '.[dev]'
       - name: Ruff lint
         run: ruff check .
       - name: Ruff format
         run: ruff format --check .
       - name: Compile Python
-        run: python -m compileall -q apps src scripts migrations
+        run: python -m compileall -q apps src scripts migrations tests
       - name: Check dependencies
         run: python -m pip check
       - name: Check repository security boundaries
         run: python -m scripts.check_security_boundaries
+
+  dependencies:
+    name: Python dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install pinned audit tool
+        run: python -m pip install pip-audit==2.10.1
+      - name: Audit resolved project dependencies
+        run: python -m pip_audit . --strict
 
   tests:
     name: pytest with PostgreSQL and pgvector
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        image: pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
         env:
           POSTGRES_USER: it_support
           POSTGRES_PASSWORD: ci-only-password
@@ -64,15 +78,15 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - name: Create isolated test database
         run: docker exec ${{ job.services.postgres.id }} createdb -U it_support enterprise_it_support_test
       - name: Install project
-        run: python -m pip install --no-build-isolation '.[dev]'
+        run: python -m pip install '.[dev]'
       - name: Run test suite
         run: python -m pytest -q
 
@@ -83,7 +97,7 @@ jobs:
       IT_SUPPORT_ENVIRONMENT: test
     services:
       postgres:
-        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        image: pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
         env:
           POSTGRES_USER: it_support
           POSTGRES_PASSWORD: ci-only-password
@@ -96,15 +110,15 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - name: Create isolated test database
         run: docker exec ${{ job.services.postgres.id }} createdb -U it_support enterprise_it_support_test
       - name: Install project
-        run: python -m pip install --no-build-isolation '.[dev]'
+        run: python -m pip install '.[dev]'
       - name: Upgrade to the single migration head
         run: python -m scripts.run_migrations
       - name: Prove repeated automatic migration is a no-op
@@ -119,7 +133,7 @@ jobs:
       IT_SUPPORT_ENVIRONMENT: test
     services:
       postgres:
-        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        image: pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
         env:
           POSTGRES_USER: it_support
           POSTGRES_PASSWORD: ci-only-password
@@ -132,15 +146,17 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
       - name: Create isolated test database
         run: docker exec ${{ job.services.postgres.id }} createdb -U it_support enterprise_it_support_test
       - name: Install project
-        run: python -m pip install --no-build-isolation '.[dev]'
+        run: python -m pip install '.[dev]'
+      - name: Migrate evaluation database
+        run: python -m scripts.run_migrations
       - name: Run deterministic 30-case evaluation gate
         run: python -m scripts.run_evaluations
 
@@ -148,13 +164,24 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2.3.9
+      - name: Download and verify Gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --output "$archive"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan Git history and worktree
+        run: |
+          "$RUNNER_TEMP/gitleaks" git . --config .gitleaks.toml --no-banner --redact
+          "$RUNNER_TEMP/gitleaks" dir . --config .gitleaks.toml --no-banner --redact
 
   docker:
     name: Docker build (${{ matrix.name }})
@@ -168,10 +195,10 @@ jobs:
           - name: streamlit
             dockerfile: docker/Dockerfile.streamlit
     steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Build image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}

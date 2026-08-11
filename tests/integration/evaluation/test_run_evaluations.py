@@ -56,7 +56,8 @@ async def test_complete_cli_run_writes_reports_gate_and_previous_diff(
         assert first.metrics.agent["tool_argument_accuracy"].sample_count == 17
         assert first.metrics.generation["citation_validity"].value == 1
         assert first.metrics.generation["refusal_correctness"].sample_count == 9
-        assert {"knowledge-07", "knowledge-08"}.issubset(first.failed_case_ids)
+        assert first.metrics.generation["refusal_correctness"].value == 1
+        assert {"knowledge-07", "knowledge-08"}.isdisjoint(first.failed_case_ids)
         assert len(first.metadata.knowledge_corpus_fingerprint) == 64
         assert first.metadata.knowledge_document_count >= 6
         assert first.metadata.embedding_provider == "fake"

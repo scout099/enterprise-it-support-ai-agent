@@ -111,7 +111,7 @@ PostgreSQL healthy
 → Streamlit starts
 ```
 
-自动迁移入口只允许单一 Alembic head，只执行前向 `upgrade head`；数据库已在 head 时为 no-op。它不会 downgrade、drop、reset 或 seed，也不会在每个 Uvicorn worker 中重复运行。
+自动迁移入口只允许单一 Alembic head，只执行前向 `upgrade head`；数据库已在 head 时为 no-op。无论首次升级还是 no-op，它都会核验 migration-owned 的 PostgreSQL FTS GIN 表达式索引，避免版本号正确但关键索引缺失。它不会 downgrade、drop、reset 或 seed，也不会在每个 Uvicorn worker 中重复运行。
 
 打开：
 
@@ -292,13 +292,14 @@ IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_evaluations
 数据库语义测试使用真实 PostgreSQL/pgvector，不以 SQLite 替代。GitHub Actions 包含：
 
 - Ruff、format、compileall、pip check；
+- `pip-audit` 依赖漏洞扫描与 Dependabot 受控更新；
 - 真实 PostgreSQL/pgvector pytest；
 - migration 单一 head、重复 no-op 和 `alembic check`；
 - 30-case Evaluation regression；
 - Gitleaks secret scan；
 - FastAPI 与 Streamlit Docker build。
 
-Phase 12 最终本地全量为 `245 passed`。两个镜像、Compose 健康链路、安全 migration、30-case Evaluation 和 secret scan 均已实际运行；完整证据记录在 [`docs/phase_reports/phase_12.md`](docs/phase_reports/phase_12.md)。GitHub-hosted workflow 只有在提交/推送后才能产生远端绿灯，本仓库当前不把“workflow 文件存在”写成“远端 CI 已通过”。
+Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 Compose 健康链路、安全 migration、30-case Evaluation、依赖漏洞和 secret scan 均已实际运行；完整证据记录在 [`docs/phase_reports/phase_12.md`](docs/phase_reports/phase_12.md)。GitHub-hosted [CI run 31494468543](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) 的 8 个 jobs 全部通过，覆盖同一组质量、数据库、评估、安全和镜像门禁。
 
 ## 安全边界
 
@@ -310,19 +311,20 @@ Phase 12 最终本地全量为 `245 passed`。两个镜像、Compose 健康链�
 - 跨 actor/role 的 Run、Confirmation、Ticket、Audit、Analytics 和 Approval 读取或操作会被拒绝；
 - 测试环境禁止真实 Model/Embedding Provider；Evaluation 要使用真实 Provider 必须显式授权。
 
-这是一套作品集级安全基线，不是生产安全认证。公开仓库前仍应启用平台 secret scanning、分支保护和依赖更新，并人工检查 Git history、截图与二进制 fixture。
+第三方 GitHub Actions 和 pgvector CI/Compose 镜像使用不可变 SHA/digest，`pip-audit` 当前未发现已知漏洞，Dependabot 按月提出 pip、Actions 和 Docker minor/patch 更新；私有 GitHub 仓库已启用 vulnerability alerts 和 automated security fixes。这仍是作品集级安全基线，不是生产安全认证；公开仓库前还应人工检查 Git history、截图与二进制 fixture，并按托管方案确认平台 secret scanning 和分支保护能力。
 
 ## 当前结果
 
 - 13 个 Alembic revision，当前 head 为 `20260801_0013`；
 - 7 个只读 Mock 工具；
 - 30 条 Agent Evaluation 案例；
-- Phase 12 完整本地回归 `245 passed`，无真实 Provider 调用；
-- 最新 Evaluation `eval-20260805T141357Z-046e52d7` Gate PASS：Recall@3/5 `1.0/1.0`、MRR `0.8333`、Citation Validity/Evidence Coverage `1.0/1.0`、Intent/Tool Selection/Workflow `1.0`、Prohibited Action Rate `0.0`；
-- Refusal Correctness 为 `0.7778`，失败案例是 `knowledge-07/08`；previous-run 因 corpus fingerprint 变化不可比较；
-- FastAPI/Streamlit 镜像构建成功，Compose 中 db/api/ui healthy、migration exited 0，seed 连续两次计数一致；
-- Gitleaks 工作区与 3 个 Git commits 均未发现泄漏；
+- Phase 12 完整本地回归 `251 passed`，无真实 Provider 调用；
+- 最新 Evaluation `eval-20260811T125222Z-6a3c661e` Gate PASS 且失败案例为空：Recall@3/5 `1.0/1.0`、MRR `0.9167`、Citation Validity/Evidence Coverage `1.0/1.0`、Refusal Correctness `1.0`、Intent/Tool Selection/Workflow `1.0`、Prohibited Action Rate `0.0`；
+- previous-run 与当前 dataset/corpus 可比较；拒答提升来自 Fake RAG 的具体事项证据判断与 Top-K 校准，不代表真实 Provider 已被验证；
+- FastAPI/Streamlit 镜像从干净依赖环境构建成功；隔离 Compose 项目中 db/api/ui healthy、首次 migration exited 0，重复 migration no-op，seed 连续两次计数一致；
+- Gitleaks 工作区与完整 Git history 均未发现泄漏；`pip-audit` 未发现当前解析依赖的已知漏洞；
 - Streamlit Chat/Dashboard、幂等 seed、R1 确认建单和 R3 模拟审批已有真实本地演示证据。
+- GitHub-hosted CI 已在发布分支的 PR 上 8/8 通过；仓库当前保持 private，改为公开仍需项目所有者明确确认。
 
 这些数字来自固定虚构数据和本机/CI 环境，不代表生产 SLA、真实员工满意度或真实企业准确率。
 

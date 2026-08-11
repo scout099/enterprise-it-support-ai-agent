@@ -1,10 +1,10 @@
 # Current State
 
-- **更新时间：** 2026-08-05
+- **更新时间：** 2026-08-11
 - **当前完成阶段：** Phase 12：部署、CI、安全检查和作品集包装
-- **阶段结论：** CONDITIONAL PASS（本地工程门禁 PASS；GitHub-hosted CI 需在提交/推送后确认）
+- **阶段结论：** CONDITIONAL PASS（本地与 GitHub-hosted 工程门禁 PASS；仅学习验收待项目所有者完成）
 - **数据库 Head：** `20260801_0013`
-- **Git 状态：** Phase 6–12 与根目录工作规则已收敛到 `feat(delivery): complete phases 6-12` 阶段提交；提交后工作区 clean
+- **Git 状态：** 私有 GitHub 仓库已建立；`agent/phase-12-release` 已 push，并由 Draft PR #1 承载 Phase 12 发布收尾
 
 ## 当前可运行能力
 
@@ -12,26 +12,29 @@
 - Tool 调用统一经过 Registry、严格 Schema、权限/风险 Policy、timeout/retry、幂等与脱敏审计；应用不存在 Shell、Python、SQL、`eval`、`exec`、`subprocess` 任意执行入口；
 - Markdown/TXT/PDF 上传同时校验 suffix、allowlisted media type 和 5 MB 大小上限；检索内容与用户输入均视为不可信数据；
 - Docker Compose 按 `db healthy → migrate exited 0 → api healthy → ui healthy` 启动；API/UI 使用 UID 10001 非 root，端口只绑定 localhost；
-- 自动迁移要求单一 Alembic head，只执行 `upgrade head`，数据库已在 head 时 no-op，不执行 downgrade、drop、reset 或 seed；
-- GitHub Actions 包含 Ruff、pytest + 真实 pgvector、migration 重复 no-op + drift、30-case Evaluation、Gitleaks 和两个 Docker build；
+- 自动迁移要求单一 Alembic head，只执行 `upgrade head`，数据库已在 head 时 no-op，并在两条路径核验 migration-owned FTS GIN 表达式索引；不执行 downgrade、drop、reset 或 seed；
+- GitHub Actions 包含 Ruff、pytest + 真实 pgvector、migration 重复 no-op + drift、30-case Evaluation、Gitleaks、`pip-audit` 和两个 Docker build；所有第三方 Actions 固定完整 SHA，pgvector 固定 digest，Dependabot 按月提出受控更新；
+- 私有 GitHub 仓库已启用 vulnerability alerts 与 automated security fixes；平台返回 alerts endpoint 204，security fixes `enabled=true`、`paused=false`；
 - README、5 分钟 Demo、面试指南、三方向简历 Bullet 与 Phase 12 报告已完成。
 
 ## Phase 12 验证快照
 
-- 标准全量测试：`.venv/bin/python -m pytest -q` → `245 passed in 17.98s`；数据库语义使用真实隔离 PostgreSQL/pgvector；
-- Ruff → `All checks passed!`；format → `170 files already formatted`；compileall、pip check、security boundary、Git whitespace 均通过；
+- 标准全量测试：`.venv/bin/python -m pytest -q` → `251 passed in 17.31s`；数据库语义使用真实隔离 PostgreSQL/pgvector；
+- Ruff → `All checks passed!`；format → `172 files already formatted`；compileall、pip check、security boundary、Git whitespace 均通过；`pip-audit` → `No known vulnerabilities found`；
 - migration：开发/测试库均已在 `20260801_0013`；安全入口连续执行两次均 no-op；`alembic check` → `No new upgrade operations detected.`；
-- Evaluation：`eval-20260805T141357Z-046e52d7`，Gate PASS；Recall@3/5 `1.0/1.0`、MRR `0.8333`、Citation Validity `1.0`、Evidence Coverage `1.0`、Unsupported Claim Rate `0.0`、Intent/Tool/Workflow `1.0`、Prohibited Action Rate `0.0`；`knowledge-07/08` 仍为拒答准确性失败，Refusal Correctness `0.7778`；
-- previous-run diff 因 `knowledge_corpus_fingerprint_changed` 明确为不可比较，没有把 MRR 差异伪装成回归或改进；
-- Docker：FastAPI、Streamlit、migration 镜像实际 build 成功；Compose 中 db/api/ui healthy、migrate exited 0；`/health`、`/ready`、Streamlit `/_stcore/health` 均通过；
+- Evaluation：`eval-20260811T125222Z-6a3c661e`，Gate PASS 且 failed cases `[]`；Recall@3/5 `1.0/1.0`、MRR `0.9167`、Citation Validity `1.0`、Evidence Coverage `1.0`、Unsupported Claim Rate `0.0`、Refusal Correctness `1.0`、Intent/Tool/Workflow `1.0`、Prohibited Action Rate `0.0`；
+- previous-run 与当前 dataset/corpus 可比较；Fake RAG 现要求具体事项词由证据支持，并用 3 个单元测试和完整 Evaluation 回归覆盖，仍不外推到真实 Provider；
+- Docker：FastAPI、Streamlit、migration 镜像在隔离项目中从零 build；全新数据卷首次迁移成功，db/api/ui healthy、migrate exited 0，重复 migration 明确 no-op；
 - 容器内 seed 连续两次均返回 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback；容器内 30-case Evaluation Gate PASS；
-- Gitleaks v8.30.1 官方包 SHA-256 校验通过；精确排除本地 `.venv` 和三条显式非密钥测试幂等值后，最终工作区约 6.17 MB 与 3 个 Git commits 均 `no leaks found`；仓库安全脚本也通过；
-- Prompt Injection 聚焦测试、上传 MIME/大小测试和越权/审批/审计聚焦集均通过；完整行为由 245 项全量回归覆盖。
+- Gitleaks v8.30.1 官方包 SHA-256 `b40ab0…aeb6a5` 校验通过；精确 allowlist 后，最终工作区约 6.53 MB 与当前完整 Git history 均 `no leaks found`；仓库安全脚本也通过；
+- Prompt Injection 聚焦测试、上传 MIME/大小测试和越权/审批/审计聚焦集均通过；完整行为由 251 项全量回归覆盖；
+- 实际 HTTP 演示通过 VPN Citation、Outlook 四个 Mock Tool、R1 确认建单、Audit 和 Dashboard；失败场景验证错误 actor 确认 403、employee 读取 Analytics 403、伪装 PDF 上传 415。
+- GitHub-hosted PR run [`31494468543`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) 在 commit `6e7589e` 上 success；Python dependency audit、migration、Gitleaks、Evaluation、Ruff/package、pytest + PostgreSQL/pgvector、FastAPI build、Streamlit build 共 8/8 jobs 通过。
 
-## 已知限制与未完成外部验证
+## 已知限制
 
-- GitHub Actions workflow 已静态解析，所有对应命令和镜像在本机通过；但当前没有提交或 push，未产生 GitHub-hosted workflow run，因此不能声称远端 CI 已绿；
-- 当前依赖使用受 major version 约束而非完整 lockfile；本轮 Python 3.12 镜像从干净环境解析、构建和 smoke 通过，但长期可复现发布仍应引入受控依赖更新流程；
+- GitHub 仓库当前为 private，尚未执行公开可见性切换；公开前仍需项目所有者确认，并应再核对仓库页面、描述和展示素材；
+- 当前依赖使用受 major version 约束而非完整 hash lockfile；本轮 Python 3.12 镜像从干净环境解析、构建和 smoke 通过，并由 pinned audit tool + Dependabot 管理当前风险，但生产可复现发布仍需正式锁定策略；
 - 没有生产 SSO、可信 Principal、tenant isolation、真实企业 Adapter、secret manager、TLS、高可用、供应链签名或漏洞认证；本地 actor/role 仍是 Demo 输入；
 - R3 只产生模拟结果；Approval decision 与 graph resume 仍非单一事务；本地文件与 PostgreSQL 也不是单一原子事务；
 - PDF 不做 OCR；pgvector 当前 exact scan；30 条虚构 Evaluation 和词法 groundedness 不代表生产分布或 SLA；
@@ -40,4 +43,4 @@
 
 ## 阶段停止点
 
-Phase 12 的仓库内实现、本地验收和 Phase 6–12 阶段提交已完成，没有剩余 Blocking 代码缺口。唯一条件是 push 后观察 GitHub-hosted CI；本次不擅自 push 或 tag。未经项目所有者确认，不自动开始新的 Phase 或生产集成。
+Phase 12 没有剩余已知 Blocking 工程缺口，本地与 GitHub-hosted 工程门禁均已通过。阶段保持 CONDITIONAL PASS 的唯一原因是项目所有者尚需独立完成本报告给出的学习任务；完成后才建议打 Tag。仓库公开可见性仍需明确确认。本次不开始新的 Phase。

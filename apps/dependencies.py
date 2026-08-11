@@ -239,29 +239,54 @@ def _fake_intent_response(call: FakeModelCall) -> dict[str, object]:
     }
 
 
+def _fake_rag_terms(text: str) -> set[str]:
+    """Normalize a narrow English plural form for deterministic demo overlap."""
+    return {
+        (
+            term[:-1]
+            if len(term) >= 5 and term.endswith("s") and not term.endswith(("is", "ss", "us"))
+            else term
+        )
+        for term in extract_keyword_terms(text)
+    }
+
+
 def _fake_rag_response(call: FakeModelCall) -> dict[str, object]:
     """Produce a repeatable local answer from the strongest keyword-overlap evidence."""
     try:
         payload = json.loads(call.messages[-1].content)
         context = payload["context"]
-        question_terms = set(extract_keyword_terms(str(payload["question"])))
+        question_terms = _fake_rag_terms(str(payload["question"]))
+
+        def evidence_terms(item: dict[str, object]) -> set[str]:
+            return _fake_rag_terms(
+                " ".join(
+                    (
+                        str(item["document_title"]),
+                        str(item["section_title"] or ""),
+                        str(item["content"]),
+                    )
+                )
+            )
+
+        subject_terms = question_terms - {
+            "about",
+            "account",
+            "according",
+            "documented",
+            "faq",
+            "guide",
+            "outlook",
+            "process",
+            "say",
+            "sop",
+            "vpn",
+        }
         evidence = max(
             context,
             key=lambda item: (
-                len(
-                    question_terms
-                    & set(
-                        extract_keyword_terms(
-                            " ".join(
-                                (
-                                    str(item["document_title"]),
-                                    str(item["section_title"] or ""),
-                                    str(item["content"]),
-                                )
-                            )
-                        )
-                    )
-                ),
+                len(subject_terms & evidence_terms(item)),
+                len(question_terms & evidence_terms(item)),
                 float(item["keyword_score"]) if item["keyword_score"] is not None else -1.0,
             ),
         )
@@ -270,6 +295,27 @@ def _fake_rag_response(call: FakeModelCall) -> dict[str, object]:
 
     content = " ".join(str(evidence["content"]).split())
     document_title = str(evidence["document_title"])
+    selected_evidence_terms = _fake_rag_terms(
+        " ".join(
+            (
+                document_title,
+                str(evidence["section_title"] or ""),
+                content,
+            )
+        )
+    )
+    answerable = bool((subject_terms or question_terms) & selected_evidence_terms)
+    if not answerable:
+        return {
+            "summary": "现有知识库证据不足",
+            "answer": "当前授权知识库没有足够证据回答该问题。",
+            "diagnosis": [],
+            "evidence_ids": [],
+            "limitations": ["Fake model 仅用于本地演示结构化 RAG 流程."],
+            "next_steps": ["一般建议: 请补充信息或联系 IT 支持人员核实."],
+            "confidence": 0.25,
+            "answerable": False,
+        }
     return {
         "summary": f"来自 {document_title} 的知识库回答",
         "answer": f"企业知识库片段说明: {content[:1200]}",
@@ -278,5 +324,5 @@ def _fake_rag_response(call: FakeModelCall) -> dict[str, object]:
         "limitations": ["Fake model 仅用于本地演示结构化 RAG 流程."],
         "next_steps": ["企业知识库: 请按照引用片段操作并核对结果."],
         "confidence": 0.75,
-        "answerable": True,
+        "answerable": answerable,
     }

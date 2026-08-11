@@ -33,7 +33,7 @@ docker compose ps
 在 **IT Support Chat** 输入：
 
 ```text
-What does the approved VPN configuration guide say about connecting from home?
+What is the approved VPN server address?
 ```
 
 展示：
