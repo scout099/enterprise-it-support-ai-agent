@@ -2257,3 +2257,11 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **GitHub 安全设置：** vulnerability alerts endpoint 返回 204；automated security fixes 返回 `enabled=true`、`paused=false`。仓库内 monthly Dependabot、hosted `pip-audit` 和 Gitleaks 继续作为独立 fail-closed 门禁。
 - **最终本地重扫：** 重新下载 Gitleaks v8.30.1 Darwin arm64 官方包并核对 SHA-256 `b40ab0ae55c…aeb6a5`；最终文档工作区约 6.54 MB、6 commits history 约 1.63 MB，二者均 `no leaks found`。Ruff lint、format、repository security boundary 与 `git diff --check` 同时通过。
 - **阶段影响：** hosted CI 外部证据缺口关闭，Phase 12 工程结论为 PASS。总体仍为 CONDITIONAL PASS 的唯一原因是项目所有者需独立完成学习验收；公开可见性和 `phase-12-complete` Tag 均不在未确认情况下执行。本步骤同步 README、Current State、Roadmap 与 Phase 12 report，不进入下一 Phase。
+
+### Step 12.18：修复首次 Dependabot 运行暴露的更新策略偏差
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（持续依赖维护收尾）。
+- **完成日期：** 2026-08-11
+- **实际发现：** Phase 12 PR 合并后，main CI run `31495296148` 8/8 success；随后平台首次执行三类 Dependabot 更新。pip 与 GitHub Actions job 成功，但 Docker job `31495301140` 因配置目录 `/` 下没有 Dockerfile 而以 `dependency_file_not_found` 失败，实际 Dockerfiles 位于 `/docker`。同时 GitHub Actions 和 pip 产生了 3 个 major-bound PR，证明 `groups.update-types` 只决定分组，不会禁止未分组的 major update，与文档所述“只提出 minor/patch”不一致。
+- **必要修复：** Docker ecosystem directory 改为 `/docker`；pip、GitHub Actions 和 Docker 三类均显式 ignore `version-update:semver-major`，保留 monthly、minor/patch group 和每类最多 5 个开放 PR。不会自动合并已产生的 major PR；待配置进入 main 后关闭这些不符合当前策略的 bot PR。
+- **验证状态：** YAML 解析、Ruff、security boundary、Git whitespace 和 hosted CI 将按同一发布门禁重跑；Docker Dependabot 的下一次平台运行结果在本步骤后续补充，不用静态配置代替托管证据。
