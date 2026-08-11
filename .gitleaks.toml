@@ -1,0 +1,17 @@
+title = "Enterprise IT Support AI Agent secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore the local virtual environment, which is never committed."
+paths = ['''(^|/)\.venv/''']
+
+[[allowlists]]
+description = "Allow only these explicit non-secret idempotency fixtures."
+targetRules = ["generic-api-key"]
+regexes = [
+  '''^r3-permission-approval$''',
+  '''^phase9-missing-reason$''',
+  '''^phase9-reject-once$''',
+]

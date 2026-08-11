@@ -13,5 +13,6 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+artifacts/evaluations/
 data/knowledge/*
 !data/knowledge/.gitkeep

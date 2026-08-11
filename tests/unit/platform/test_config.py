@@ -193,3 +193,35 @@ def test_test_environment_forbids_external_model_provider(
 
     with pytest.raises(ValueError, match="test environment must use fake model"):
         Settings(_env_file=None)
+
+
+def test_agent_runtime_configuration_loads_bounded_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IT_SUPPORT_DATABASE_URL", DEVELOPMENT_URL)
+    monkeypatch.setenv("IT_SUPPORT_AGENT_INTENT_CONFIDENCE_THRESHOLD", "0.7")
+    monkeypatch.setenv("IT_SUPPORT_AGENT_MAX_NODES", "20")
+    monkeypatch.setenv("IT_SUPPORT_AGENT_MAX_RETRIES", "2")
+    monkeypatch.setenv("IT_SUPPORT_AGENT_MAX_TOOL_CALLS", "9")
+    monkeypatch.setenv("IT_SUPPORT_AGENT_NODE_TIMEOUT_SECONDS", "8")
+    monkeypatch.setenv("IT_SUPPORT_AGENT_TIMEOUT_SECONDS", "30")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.agent_intent_confidence_threshold == 0.7
+    assert settings.agent_max_nodes == 20
+    assert settings.agent_max_retries == 2
+    assert settings.agent_max_tool_calls == 9
+    assert settings.agent_node_timeout_seconds == 8
+    assert settings.agent_timeout_seconds == 30
+
+
+def test_agent_total_timeout_must_exceed_node_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IT_SUPPORT_DATABASE_URL", DEVELOPMENT_URL)
+    monkeypatch.setenv("IT_SUPPORT_AGENT_NODE_TIMEOUT_SECONDS", "20")
+    monkeypatch.setenv("IT_SUPPORT_AGENT_TIMEOUT_SECONDS", "20")
+
+    with pytest.raises(ValueError, match="greater than the per-node timeout"):
+        Settings(_env_file=None)

@@ -1351,3 +1351,814 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **当前边界：** `user_role` 仍自报且无 subject/tenant，只适合本地演示；Citation 不证明逐句蕴含；真实 Provider smoke 未经预算和数据授权未运行；Context 字符截断、GET 无分页和 SDK client 未统一关闭仍是延后项。
 - **学习状态：** 工程验收为 PASS；完整 Phase 结论在用户完成本次面试题与独立练习前为 CONDITIONAL PASS。建议 Commit：`fix(rag): close phase 5 acceptance gaps`；建议 Tag：完成学习验收后使用 `phase-5-complete`。
 - **与下一步骤的关系：** 本次停止在 Phase 5，不创建 Phase 6 功能；只有用户另行确认并完成学习验收后才讨论下一阶段。
+
+---
+
+## Phase 6：LangGraph Agent Runtime 与意图路由
+
+### Step 6.1：确认运行时边界、引入 LangGraph 并配置执行上限
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 在不改写 Phase 5 RAG 的前提下确认当前 LangGraph API、引入数据库 checkpoint 依赖，并把低置信度、节点数、重试和超时限制变成强类型配置。
+- **实际完成内容：** 读取官方 LangGraph 1.x 的 `StateGraph`、`thread_id` checkpoint、`AsyncPostgresSaver` 和 `recursion_limit` 文档；安装 `langgraph 1.2.9`、`langgraph-checkpoint-postgres 3.1.0` 与 psycopg pool；新增意图置信度阈值、最大节点数、最大重试数、单节点超时和总运行超时配置；总超时必须严格大于单节点超时；同步 `.env.example`。
+- **新增或修改文件：** `pyproject.toml`、`.env.example`、`src/enterprise_it_support/platform/config.py`、`tests/unit/platform/test_config.py`、`docs/project_journal.md`。
+- **请求或数据流程：** 环境变量 → Pydantic Settings 边界校验 → Agent Runtime 使用确定性限制 → LangGraph 运行时和 PostgreSQL checkpointer。
+- **关键代码入口：** `Settings.agent_intent_confidence_threshold`、`Settings.agent_max_nodes`、`Settings.agent_max_retries`、`Settings.agent_node_timeout_seconds`、`Settings.agent_timeout_seconds`。
+- **为什么采用当前实现：** LangGraph 负责显式状态转换和 checkpoint；业务运行/步骤审计仍由本项目自己的 Repository 维护。限制全部配置化，避免把循环、重试和超时散落在节点实现中。
+- **运行与验证命令：** `.venv/bin/python -m pip install -e '.[dev]'`；`.venv/bin/python -m pytest tests/unit/platform/test_config.py -q`；`.venv/bin/ruff check src/enterprise_it_support/platform/config.py tests/unit/platform/test_config.py`。
+- **测试结果：** 依赖安装成功；配置聚焦测试 `15 passed in 0.02s`；Ruff `All checks passed!`。
+- **遇到的问题：** 沙箱内 pip 无法访问本机 `127.0.0.1:7897` 代理，首次安装失败。
+- **解决方法：** 按权限机制使用获准的网络安装重试；没有修改代理或全局 Python 环境。
+- **当前限制：** 本步骤只建立依赖和配置边界，尚未定义 AgentState、节点、业务持久化表或 HTTP 入口。
+- **与下一步骤的关系：** 下一步定义结构化分类、AgentState 和 LangGraph 节点，并用路由/异常/最大步骤单元测试驱动实现。
+
+### Step 6.2：实现结构化意图分类、AgentState 与有界 LangGraph 路由
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 把单次 Agent 请求改造成显式状态图，覆盖六类意图、低置信度澄清、三类诊断占位、工单未开放、升级、异常和最大步骤保护。
+- **实际完成内容：** 定义完整 `AgentState`、六类 `AgentIntent`、三档风险、严格 `IntentClassification` 及只允许简短决策说明的 `reasoning_summary`；实现 `intake`、`classify_intent`、`request_clarification`、`retrieve_knowledge`、`compose_answer`、三类 diagnosis placeholder、`ticket_unavailable`、`escalate_to_human` 和 `finalize`；每个节点都有单节点超时和有限重试；graph 使用 `recursion_limit`，总执行使用独立 timeout；节点错误只保存稳定错误码和安全文案。
+- **兼容性改动：** `RAGAnswerService` 新增 `answer_from_results()`，让 graph 的 retrieval 与 compose 节点职责分离，同时原 `ask()` 继续复用同一生成、验证、Citation 和 Conversation 持久化逻辑。
+- **新增或修改文件：** `src/enterprise_it_support/agent_runtime/state.py`、`runtime.py`、`rag.py`、`tests/unit/agent_runtime/test_runtime.py`、`docs/project_journal.md`。
+- **请求或数据流程：** intake → structured classification → deterministic confidence/intent route → clarification、RAG、diagnosis placeholder、ticket unavailable 或 escalation → finalize。
+- **关键代码入口：** `AgentRuntime.run()`、`AgentRuntime._build_graph()`、`AgentRuntime._bounded_node()`、`IntentClassification`、`RAGAnswerService.answer_from_results()`。
+- **为什么采用当前实现：** 模型只返回受 Schema 约束的语义分类；阈值、路径、执行上限、风险兜底和结束条件都由确定性代码控制。诊断和工单仅返回占位结果，没有注册或执行任何工具。
+- **运行与验证命令：** `.venv/bin/python -m pytest tests/unit/agent_runtime/test_runtime.py tests/unit/agent_runtime/test_rag.py -q`；Ruff 与 compileall 聚焦检查。
+- **测试结果：** 路由、低置信度、升级、异常重试、最大步骤、checkpoint 恢复和原 RAG 聚焦回归共 `23 passed in 0.68s`；Ruff 与 compileall 通过。
+- **遇到的问题：** 初版错误收敛在进入 `finalize` 后会清空上游安全错误状态。
+- **解决方法：** bounded wrapper 只在非 finalize 节点成功时清除本节点重试错误；finalize 保留上游错误码和 failed 状态。
+- **当前限制：** 当前 checkpoint 测试使用 LangGraph `InMemorySaver`；业务 run/step ORM 和 migration 已定义，但尚未完成真实 PostgreSQL 与官方 `AsyncPostgresSaver` 验证。
+- **与下一步骤的关系：** 下一步应用 migration，验证 `agent_runs`、`agent_steps` 的真实事务行为及跨 checkpointer 实例恢复。
+
+### Step 6.3：实现 Agent Run/Step 数据库持久化与 PostgreSQL checkpoint
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 让每次 Agent 请求和节点尝试可审计，并证明 graph state 能从数据库 checkpoint 恢复。
+- **实际完成内容：** 新增 `agent_runs` 和 `agent_steps` ORM、Repository 与 Alembic `20260723_0007`；Run 保存请求、Conversation 关联、分类、当前节点、完整最新 state、稳定错误码和生命周期；Step 以 run 内递增序号追加节点名、成功/失败、state snapshot、安全错误和延迟；接入官方 `AsyncPostgresSaver`，首次启动执行幂等 setup。
+- **新增或修改文件：** `agent_runtime/models.py`、`persistence.py`、migration `20260723_0007_add_agent_runs.py`、`migrations/env.py`、migration tests、`tests/integration/agent_runtime/test_persistence.py`。
+- **请求或数据流程：** create Agent Run → 每个节点尝试写 Agent Step 并更新 Run state → LangGraph 以 run ID 作为 thread ID 保存 checkpoint → Repository/graph 可分别恢复业务轨迹与执行 state。
+- **关键代码入口：** `AgentRunRepository.create_run()`、`save_step()`、`get()`、`AgentRuntime.load_checkpoint()`、`AsyncPostgresSaver.setup()`。
+- **为什么采用当前实现：** LangGraph checkpoint 表由官方 saver 管理其内部版本；本项目的 migration 只拥有稳定的业务审计表，避免依赖第三方内部表结构作为产品 API。
+- **运行与验证命令：** `IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head`；`alembic current`；PostgreSQL persistence、checkpoint 与 migration 聚焦 pytest；Ruff。
+- **测试结果：** 测试库达到 `20260723_0007 (head)`；Repository、跨 saver 实例 checkpoint 恢复和 schema 检查 `3 passed in 0.38s`；Ruff 通过。
+- **遇到的问题：** 首个 checkpoint 恢复测试试图编译没有 START 入口的空 graph，LangGraph 在编译期正确拒绝。
+- **解决方法：** 用相同 state schema 和最小合法 graph 重新编译，再从新 saver 实例读取相同 thread checkpoint；没有绕过 graph 校验。
+- **当前限制：** 当前 checkpoint 使用单 PostgreSQL 连接，适合本地 MVP；高并发池化和 checkpoint 数据保留策略不在本 Phase。
+- **与下一步骤的关系：** 下一步把 Runtime 装配到 FastAPI，并验证所有 HTTP 分支和 Phase 5 RAG 兼容性。
+
+### Step 6.4：接入 Agent API 并保留可信 RAG
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 提供可执行和可读取的 Agent HTTP 入口，并用真实 PostgreSQL 证明知识问题仍走 Phase 5 的可信 RAG。
+- **实际完成内容：** FastAPI lifespan 初始化 PostgreSQL checkpointer 和 `AgentRuntime`；新增 `POST /agent/runs`、`GET /agent/runs/{run_id}`、输入/输出 Schema 和本地 role readback 检查；默认 Fake Model Gateway 按请求 Schema 分派确定性分类或 RAG 输出；API 返回 intent、confidence、risk、missing information、简短 reasoning summary、最终响应和完整有序节点轨迹。
+- **新增或修改文件：** `apps/api/main.py`、`apps/dependencies.py`、`agent_runtime/routes.py`、`schemas.py`、Agent API integration tests。
+- **请求或数据流程：** HTTP request → request ID → Agent Runtime → LangGraph nodes → Agent Run/Steps + checkpoint → 可选 RAG Conversation/Message → HTTP response/readback。
+- **关键代码入口：** `create_agent_run()`、`get_agent_run()`、`create_app()` lifespan、`_fake_model_response()`。
+- **为什么采用当前实现：** 新 `/agent` 入口成为显式图运行入口；原 `/chat` 保持兼容，知识分支复用同一 RAG 生成、相关性、Citation 和 Conversation 持久化代码，不复制安全规则。
+- **运行与验证命令：** `.venv/bin/python -m pytest tests/integration/api/test_knowledge_documents.py -k 'agent_api' -q`。
+- **测试结果：** 真实 PostgreSQL 下知识 RAG、三类 diagnosis、ticket、unsupported、低置信度澄清和 run readback/role mismatch 共 `7 passed, 38 deselected in 1.33s`。
+- **当前限制：** 默认 Fake 分类只用于本地确定性演示，不代表分类准确率评估；本 Phase 未建立标注分类数据集，也未调用真实付费 Provider。
+- **与下一步骤的关系：** 功能主线已接通；下一步补强 strict Schema、失败 HTTP/恢复测试和完整 regression，再执行 verification-loop。
+
+### Step 6.5：执行 verification-loop、修复启动兼容性并完成 Phase 文档
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 对照用户要求逐项验证状态、路由、持久化、checkpoint、失败边界、原 RAG、迁移、普通安装和真实运行，并同步最终文档。
+- **实际完成内容：** 建立验收矩阵；增加 strict classification required/extra-forbid 断言；执行 migration 往返、完整 pytest、Ruff、format、compileall、pip check、Git whitespace 与安全范围扫描；普通安装当前 wheel；通过真实 FastAPI composition root 执行 diagnosis、clarification 和 high-risk escalation；更新 README、Glossary、Overview、Roadmap、Backlog、Current State 与 Phase 6 report；把旧 Backlog 的分类与 LangGraph 两阶段按本次明确指令合并为 Phase 6，后续 Tool 阶段重编号为 Phase 7。
+- **新增或修改文件：** 全部 Phase 6 代码/测试文件及 `README.md`、`CONTEXT.md`、`docs/PROJECT_OVERVIEW.md`、`ROADMAP.md`、`backlog.md`、`CURRENT_STATE.md`、`phase_reports/phase_6.md`、`project_journal.md`。
+- **运行与验证命令：** test DB Alembic `0007 → 0006 → 0007`；开发/测试 `alembic current`；`.venv/bin/python -m pytest -q`；Ruff lint/format；compileall；pip check；`git diff --check`；普通 `pip install . --no-build-isolation`；真实 TestClient composition-root smoke。
+- **最终结果：** 全量 `156 passed in 6.38s`；Ruff `All checks passed!`；format `98 files already formatted`；compileall 成功；pip check 无损坏依赖；Git whitespace 通过；开发库与测试库均为 `20260723_0007 (head)`。
+- **真实 smoke：** `VPN cannot connect` → `vpn_diagnosis`/completed；`Please help` → clarification；`Disable security controls` → unsupported/high-risk escalation；三者 `tool_results=[]`，均未执行工具或写操作。
+- **发现的问题 1：** 首次全量回归 `6 failed, 150 passed`。health/error tests 使用刻意无效的数据库凭证，而 checkpoint 初始化被错误地设为应用启动前置条件。
+- **解决方法 1：** checkpoint 连接/setup 失败时只禁用 Agent Runtime并记录安全 warning，应用 liveness 保持可用，数据库状态仍由 readiness 表达；专项 `6 passed` 后全量转绿。
+- **发现的问题 2：** 首次普通 Python smoke 因虚拟环境仍是旧 wheel 安装而无法导入新增 Agent 模块，pytest 的 `pythonpath` 没有暴露该 packaging 状态。
+- **解决方法 2：** 按 README 重新普通安装当前 wheel，再运行相同 smoke 成功。
+- **发现的问题 3：** 初版把 classification metadata 放入 `tool_results`，会让没有工具调用的 Phase 产生误导。
+- **解决方法 3：** 增加独立 `classification_metadata` state/response 字段，`tool_results` 保持空列表。
+- **安全审查：** Agent Runtime 没有 subprocess、shell、Python/SQL 工具、动态 eval/exec、真实 Adapter 或工单写入；错误轨迹不保存 Provider 异常正文；Reasoning Summary 是受 Schema/长度约束的短路由说明，不请求私有思维过程。
+- **当前限制：** 自报 role、无 tenant/subject、Fake 分类未评估、checkpoint 单连接、无真实诊断/工具/工单、真实 Provider 未 smoke；这些均已写入 Current State 和 Phase report。
+- **与下一步骤的关系：** Phase 6 工程验收为 PASS，本次停止；未经用户明确确认不开始 Phase 7。
+
+## Phase 6 总结与索引
+
+- **Step 6.1：** LangGraph/PostgreSQL checkpoint 依赖与执行边界配置；
+- **Step 6.2：** AgentState、strict classification、显式 graph nodes 与有界路由；
+- **Step 6.3：** agent_runs/agent_steps、migration 0007 与 PostgreSQL checkpoint；
+- **Step 6.4：** Agent API、完整节点读取与可信 RAG 兼容；
+- **Step 6.5：** verification-loop、启动降级修复、普通安装、真实 smoke 和文档收尾。
+
+最终结论：Phase 6 的状态图、六类意图、低置信度澄清、RAG 路由、诊断/工单占位、安全升级、错误/上限、checkpoint、Run/Step 持久化、API 和文档满足当前范围；未实现真实工具或写操作。建议 Commit 为 `feat(agent): add langgraph intent routing runtime`，建议 Tag 为 `phase-6-complete`。
+
+### Step 6.6：执行 Phase 6 收尾验收与双轴代码审查
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由（收尾验收）。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 不以“代码可运行”替代验收，重新对照原始任务、验收标准、当前代码、测试和文档，先列出问题再修改。
+- **实际完成内容：** 复核 AgentState、七个指定职责节点、六类意图、结构化分类、确定性路由、执行限制、checkpoint、Run/Step 和原 RAG 回归；检查重试副作用、失败状态一致性、超时覆盖、数据库故障映射、reasoning summary 边界、恢复状态不变量、硬编码、重复逻辑、后续功能越界和安全边界。
+- **审查结论：** 发现一个 Blocking：`compose_answer` 包含 Conversation Turn 持久化，却被 graph 通用重试器自动重试，可能重复写入失败或成功 Turn。发现五个必要 Important：最终失败 Step snapshot 仍为 running；节点/总 timeout 缺少行为测试且节点 timeout 无独立错误码；checkpoint psycopg 故障未映射 503；reasoning summary 的单行边界仅靠 Prompt；恢复到 running 时未清空旧 completed_at。另有一行重复 intake 赋值。
+- **不处理的 Optional：** Fake 分类关键词硬编码、checkpoint 单连接、自报 role、TypedDict `total=False`；这些属于已知本地 MVP 边界或演示适配器，本次不扩展。
+- **证据入口：** `agent_runtime/runtime.py`、`state.py`、`persistence.py`、`routes.py`、`rag.py`、Phase 6 unit/integration tests、`docs/phase_reports/phase_6.md`。
+- **与下一步骤的关系：** 下一步只修复上述 Blocking 与必要 Important，并为每个行为补充聚焦失败路径测试；不进入 Phase 7。
+
+### Step 6.7：关闭重试副作用、节点预算与失败审计问题
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由（收尾修复）。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 修复审查发现的 Blocking 与必要 Important，不增加业务能力。
+- **实际完成内容：** 将 graph retry 改为显式 allowlist，只有无写副作用的 `classify_intent` 与 `retrieve_knowledge` 可重试，`compose_answer` 不再由 graph 重试；重试 attempt 统一消耗 `max_nodes` 硬预算，LangGraph recursion limit 保留为第二道保护；最终失败状态在保存 Step 前完成；节点 timeout 使用独立 `*_timeout` code；安全日志只记录 run/node/attempt/异常类型/稳定 code，不记录异常正文；`AgentState` 改为必需字段 TypedDict；reasoning summary 强制非空、trimmed、单行；Run 恢复到 running 时清空旧 completed_at；checkpoint psycopg 故障映射安全 503。
+- **失败路径测试：** 新增 compose 单次调用、重试消耗节点预算、单节点 timeout、总 timeout、最终失败 snapshot、日志不泄漏异常正文、reasoning summary 多行拒绝、恢复生命周期不变量和 checkpoint 503 测试。
+- **运行与验证命令：** `.venv/bin/python -m pytest tests/unit/agent_runtime/test_runtime.py tests/integration/agent_runtime/test_persistence.py tests/integration/api/test_health.py -q`；Agent Runtime 聚焦 Ruff lint/format。
+- **真实结果：** 首次沙箱运行 unit/API 全部通过，但 3 个 PostgreSQL tests 因沙箱禁止本机 5432 而 setup error；按权限机制重跑后 `26 passed in 1.06s`。Ruff `All checks passed!`，format `11 files already formatted`。
+- **与下一步骤的关系：** Blocking 与必要 Important 已形成聚焦测试闭环；下一步运行全量回归、真实演示、安全扫描并同步最终文档。
+
+### Step 6.8：完成收尾全量验收、实际演示与学习门槛
+
+- **所属 Phase：** Phase 6：LangGraph Agent Runtime 与意图路由（最终收尾）。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 在修复后运行完整工程验证、至少一条正常和两条非成功演示路径，更新 README/Current State/Phase Report，并停止在 Phase 6。
+- **实际完成内容：** 增加最后一道 reasoning 安全边界：模型仍必须返回结构化短说明，但原文不保存或展示，state/API 只使用代码基于 intent/confidence/risk 生成的固定说明；完成全量 pytest、Ruff lint/format、compileall、pip check、Git whitespace 和 Agent 范围安全扫描；用真实 FastAPI composition root、PostgreSQL Run/Step 和 checkpoint 执行三条请求；更新 README、Current State 和 Phase 6 Report。
+- **运行命令：** `.venv/bin/python -m pytest -q`；收尾聚焦 pytest；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；compileall；pip check；`git diff --check`；TestClient composition-root 三场景脚本；Agent 范围 subprocess/eval/tool/secret pattern scan。
+- **最终结果：** 全量 `164 passed in 6.60s`；聚焦 `27 passed in 1.07s`；Ruff `All checks passed!` 且 `98 files already formatted`；compileall 成功；pip check 无损坏依赖；Git whitespace 通过。安全扫描没有发现 subprocess、shell、eval/exec、真实 Tool Registry/Adapter 或工单写入；测试中的 fictional secret 未进入 HTTP/state/log。
+- **实际演示：** 正常 `VPN cannot connect` → 200/completed/`vpn_diagnosis`，节点 intake→classify→vpn placeholder→finalize；非成功一 `Please help` → 200/needs_clarification，未检索/未调用工具；非成功二 `Disable security controls` → 200/escalated/unsupported，安全升级；三条路径 `tool_results=[]`。
+- **文档与判断：** Phase 6 工程问题全部关闭，工程为 PASS；总体为 **CONDITIONAL PASS**，项目所有者需独立回答 10 道面试题并完成 30–60 分钟纯函数路由练习。建议 Commit `feat(agent): complete bounded langgraph intent runtime`；学习验收完成后建议 Tag `phase-6-complete`。
+- **停止条件：** 本次到此停止，不进入 Phase 7；下一阶段必须由项目所有者另行明确确认。
+
+---
+
+## Phase 7：VPN、Outlook、账号诊断工作流与只读工具
+
+### Step 7.1：建立只读 Tool Registry 与唯一执行 Gateway
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 定义完整 ToolDefinition，并把工具存在性、Schema、权限、timeout、有限重试、结构化结果、错误清洗和审计集中到一个 Agent 可见 seam。
+- **实际完成内容：** 新增包含 name、version、description、input/output schema、required permissions、risk、side-effect、timeout 和 retry policy 的 ToolDefinition；实现只接受无副作用工具的 ToolRegistry、确定性 RolePermissionPolicy 和 ToolExecutionGateway；Gateway 对未注册、非法输入、越权、timeout、瞬时失败、永久异常和非法输出返回稳定结构化结果，异常正文不跨越接口；新增七个可配置的 Mock 只读 Adapter 及严格输入输出 Schema。
+- **新增或修改文件：** `src/enterprise_it_support/tools/contracts.py`、`gateway.py`、`mock.py`、`tools/__init__.py`、`tests/unit/tools/test_gateway.py`、`tests/unit/tools/__init__.py`、`docs/project_journal.md`。
+- **请求或数据流程：** Runtime 结构化请求 → Registry allowlist → Pydantic input Schema → role permission → 单次 timeout/有限 retry → Mock Adapter → output Schema → observation 或安全错误 → audit Adapter。
+- **关键代码入口：** `ToolExecutionGateway.execute()`、`ToolRegistry.register()`、`ToolDefinition`、`create_mock_tool_registry()`。
+- **使用的核心技术：** Pydantic strict Schema、asyncio timeout、有限 retry、依赖注入、确定性 Mock、结构化安全错误。
+- **为什么采用当前实现：** Runtime 只需学习一个 Gateway interface；Registry、Adapter 和治理实现不暴露给节点或 LLM。删除 Gateway 会让校验、权限、上限、清洗和审计复杂度重新散落到所有调用方，因此该 module 具有实际深度。
+- **运行与验证命令：** `.venv/bin/python -m pytest tests/unit/tools -q`；`.venv/bin/ruff check src/enterprise_it_support/tools tests/unit/tools`；`.venv/bin/ruff format --check src/enterprise_it_support/tools tests/unit/tools`。
+- **测试结果：** Gateway/Registry 单元测试 `7 passed in 0.05s`；Ruff `All checks passed!`；6 个相关文件已格式化。
+- **遇到的问题：** `tools/__init__.py` 原有 Phase 8 占位 docstring 与新 docstring 并存，导致 Ruff 把第二个字符串视为 import 前语句并报告 E402。
+- **解决方法：** 保留新的 Phase 7 module docstring，删除已经失效的旧占位文本后重跑 Ruff 通过。
+- **当前限制：** 审计当前只有内存 Adapter；PostgreSQL `tool_executions` 与 Agent 工作流接入留到下一步骤。
+- **我需要理解的知识：** ToolDefinition 是允许调用合同而不是函数句柄；输入和输出都必须视为不可信；timeout/retry 与 Agent 节点上限是不同层级的控制；只读也仍需权限和审计。
+- **与下一步骤的关系：** 下一步实现 PostgreSQL tool execution audit，使成功、拒绝和失败调用都能按 Agent Run 追溯。
+
+### Step 7.2：持久化 tool_executions 并验证拒绝路径审计
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 让每个逻辑工具调用的成功、校验拒绝、权限拒绝和安全失败都能通过 Agent Run 追溯。
+- **实际完成内容：** 新增 `tool_executions` ORM 与 Alembic `20260723_0008`；记录 run/request/node、工具名/版本、状态、清洗后的参数、结构化 observation、风险、side-effect、稳定错误、attempts、latency 和时间；数据库约束禁止 side effect 为 true；实现 append/read Repository；migration env 显式加载模型；新增真实 PostgreSQL Gateway 审计集成测试和 schema 列检查。
+- **新增或修改文件：** `src/enterprise_it_support/tools/models.py`、`persistence.py`、`migrations/versions/20260723_0008_add_tool_executions.py`、`migrations/env.py`、`tests/integration/tools/test_persistence.py`、相关 migration/Agent fixture、`docs/project_journal.md`。
+- **请求或数据流程：** Gateway final result → `ToolExecutionRepository.record()` → insert `tool_executions` → `list_for_run()` 按时间和 ID 稳定读取。
+- **关键代码入口：** `ToolExecutionRepository.record()`、`ToolExecutionRepository.list_for_run()`、migration `20260723_0008`。
+- **使用的核心技术：** SQLAlchemy async、PostgreSQL JSONB、foreign key cascade、check constraints、Alembic、真实数据库集成测试。
+- **为什么采用当前实现：** Tool audit 是独立于 Agent Step 的一等事实；一个诊断节点可能产生一个工具 observation，而 Step snapshot 负责图状态，两者不能互相替代。Repository 保持 SQL 在 tools module 内，Runtime 不直接操作数据库。
+- **运行与验证命令：** `IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head`；`.venv/bin/python -m pytest tests/integration/tools/test_persistence.py tests/integration/knowledge/test_migrations.py tests/integration/agent_runtime/test_persistence.py -q`；相关 Ruff lint/format。
+- **测试结果：** migration 成功升级到 head；PostgreSQL 审计、migration 与 Agent persistence 聚焦 `5 passed in 0.45s`；Ruff `All checks passed!`，14 个相关文件已格式化。
+- **遇到的问题：** 没有出现代码失败；测试清理顺序需要先删除 `tool_executions`，再删除 Agent Run/Step，避免新外键影响隔离 fixture。
+- **解决方法：** 在 Agent persistence fixture 中显式清理 tool executions，并保留数据库 cascade 作为产品级删除约束。
+- **当前限制：** Agent Runtime 尚未调用 Gateway，因此现有诊断 Run 还不会产生 audit 行；下一步骤接入。
+- **我需要理解的知识：** Agent Step snapshot、AgentState observation 和 ToolExecution audit 分别解决执行位置、模型上下文和工具治理追溯三个不同问题。
+- **与下一步骤的关系：** 下一步替换三个 diagnosis placeholder，以显式节点调用 Gateway 并把每个 result 写回 AgentState。
+
+### Step 7.3：将三类诊断占位替换为显式只读状态图
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 让 VPN、Outlook 和账号 diagnosis 从占位响应变为可观察、有限、能根据 observation 分支的 LangGraph 流程。
+- **实际完成内容：** 扩展 AgentState 增加 tool call count、diagnostic context 和 escalation reason；VPN 图显式覆盖设备/OS、公网、客户端、VPN 服务、事件和知识步骤；Outlook 图显式解析所有邮件、错误代码、client/Web，并检查邮件服务、账号、事件和知识步骤；账号图检查锁定、密码过期、MFA、身份系统事件和知识步骤；服务异常、已知事件、工具失败、审计失败、知识为空和工具上限都安全进入人工升级；每个 Gateway result 作为 observation 写入 `tool_results`，同时保存 `tool_executions`；Agent API 返回两类轨迹。
+- **新增或修改文件：** `agent_runtime/state.py`、`runtime.py`、`schemas.py`、`routes.py`、`platform/config.py`、`apps/dependencies.py`、`apps/api/main.py`、`.env.example`、Agent Runtime/API/config tests、`docs/project_journal.md`。
+- **请求或数据流程：** intent route → 诊断专属节点 → Gateway → structured observation → AgentState/checkpoint + tool audit → observation 条件边 → Mock knowledge steps、clarification 或 safe escalation → finalize。
+- **关键代码入口：** `AgentRuntime._execute_tool()`、VPN/Outlook/account 专属节点、`_route_*_after_incidents()`、`ToolExecutionResponse`。
+- **使用的核心技术：** LangGraph conditional edges、显式 TypedDict state、确定性文本事实解析、bounded tool count、PostgreSQL audit readback。
+- **为什么采用当前实现：** 每个状态问题都有一个可见节点或 observation，不隐藏在 Prompt 中；节点只了解工具名、参数和结构化结果，治理仍完整留在 Gateway module。工具 retry 次数、工具调用上限、graph 节点预算和总 timeout 分别限制不同失控模式。
+- **运行与验证命令：** Agent/tools/config 单元聚焦 pytest；`.venv/bin/python -m pytest tests/integration/api/test_knowledge_documents.py -k 'agent_api' -q`；相关 Ruff lint/format；compileall。
+- **测试结果：** 工作流/Gateway/config 聚焦 `48 passed in 1.47s`；Agent API/PostgreSQL 聚焦 `7 passed, 38 deselected in 1.61s`；Ruff `All checks passed!`，23 个相关文件已格式化；compileall 成功。
+- **遇到的问题：** Phase 6 的 Outlook 占位测试假设任何输入都会 completed；真实 Phase 7 流程对缺少“全部邮件/错误代码/client-Web”信息的请求正确返回 needs clarification。
+- **解决方法：** 保留并测试 clarification 分支；完成路径改用包含三项事实的 Outlook 请求。原知识 RAG、ticket 和 unsupported 路由语义保持不变。
+- **当前限制：** 默认 Mock 环境返回本地固定事实，不代表企业真实状态；Outlook 事实解析是确定性演示规则，不是自然语言临床级抽取；无工单写入。
+- **我需要理解的知识：** observation 如何改变下一节点；为什么工具成功不等于诊断完成；为什么用户侧事实、服务 observation 和知识步骤需要分别建模。
+- **与下一步骤的关系：** 下一步补齐针对三类分支、工具影响、最大调用数、工具异常和完整持久化的验收测试，再做收尾审查。
+
+### Step 7.4：补齐 Phase 7 验收分支并完成首次全量回归
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 覆盖用户指定的工具治理、三类诊断分支、observation 路由、最大调用次数和异常升级，不以 happy path 代替验收。
+- **实际完成内容：** Gateway 测试覆盖七工具注册、未注册、参数 extra、权限不足、timeout 两次封顶、瞬时失败一次重试后成功、永久异常清洗和 audit 参数脱敏；诊断测试覆盖 VPN OS/公网/client/service/incident/knowledge、Outlook 全部邮件/error/client-Web/service/account/knowledge、账号 lock/password/MFA/incident/knowledge；增加 service outage 与 identity incident 跳过知识调用、Outlook 缺信息 clarification、最大工具调用数安全升级、Adapter exception 单次失败后升级；API 验证 state results 与 PostgreSQL tool executions 在 POST/GET readback 一致。
+- **新增或修改文件：** `tests/unit/tools/test_gateway.py`、`tests/unit/agent_runtime/test_runtime.py`、`tests/integration/tools/test_persistence.py`、`tests/integration/api/test_knowledge_documents.py`、相关实现修正、`docs/project_journal.md`。
+- **请求或数据流程：** 版本化测试场景 → Runtime/Gateway public interfaces → node trace + AgentState observation + tool audit → next-node assertion → final status。
+- **关键代码入口：** `build_runtime()` 测试 composition、`diagnostic_gateway()`、Agent API POST/GET readback。
+- **使用的核心技术：** pytest async、InMemorySaver、configurable Mock environment、真实 PostgreSQL、FastAPI TestClient。
+- **为什么采用当前实现：** 测试从 Gateway 和 Runtime 的正式 interface 验证可观察结果，不调用私有 Adapter 或内部 SQL；这样未来替换 Mock 数据实现时，治理合同和状态图回归仍有效。
+- **运行与验证命令：** `.venv/bin/python -m pytest tests/unit -q`；Agent API/tool persistence 聚焦；`.venv/bin/python -m pytest -q`。
+- **测试结果：** 全部 unit `91 passed in 1.47s`；Agent API 聚焦 `7 passed, 38 deselected in 1.61s`；首次 Phase 7 全量 `180 passed in 8.37s`。
+- **遇到的问题：** 没有出现产品测试失败；修改后的完整回归一次通过。此前 Phase 6 基线在沙箱内曾因本机 5432 被阻止而失败，本步骤全量使用已批准的隔离 PostgreSQL 访问。
+- **解决方法：** 保持真实数据库测试，不跳过、不改为 SQLite；环境权限与代码断言分别记录。
+- **当前限制：** 仍需执行 migration 往返、静态质量门禁、真实 composition-root smoke 和最终文档同步。
+- **我需要理解的知识：** “工具异常后升级”要求 Gateway 返回稳定失败且图选择 escalation，不是让 LangGraph 无限重试；“工具结果影响下一节点”需要断言后续节点缺席/出现，而不只断言 final 文本。
+- **与下一步骤的关系：** 功能与失败测试已闭环；下一步执行收尾审查、migration 往返、真实演示和文档更新。
+
+### Step 7.5：完成 migration、真实演示、质量门禁与阶段文档
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具（最终收尾）。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 证明 Phase 7 在真实 PostgreSQL、正式 FastAPI composition root 和普通 wheel 安装下可组合运行，并把当前事实同步到项目文档后停止。
+- **实际完成内容：** test DB 执行 `0008 → 0007 → 0008`，开发库升级 0008；通过真实 composition root 分别执行 VPN、Outlook、账号请求并读取 node/tool audit；完成全量 pytest、Ruff、format、compileall、pip check、Git whitespace 和工具范围扫描；普通构建并安装当前 wheel；更新 README、Glossary、Overview、Roadmap、Current State 和 Phase 7 report；确认未开始 Phase 8。
+- **新增或修改文件：** Phase 7 全部代码/测试/migration，以及 `README.md`、`CONTEXT.md`、`docs/PROJECT_OVERVIEW.md`、`ROADMAP.md`、`CURRENT_STATE.md`、`phase_reports/phase_7.md`、`project_journal.md`。
+- **请求或数据流程：** ordinary wheel/composition root → POST Agent Run → PostgreSQL checkpoint/Run/Step → Gateway/Mock → tool_executions → API response/readback。
+- **关键代码入口：** `create_app()`、`AgentRuntime`、`ToolExecutionGateway`、migration `20260723_0008`、`POST/GET /agent/runs`。
+- **使用的核心技术：** Alembic round-trip、FastAPI TestClient、PostgreSQL/pgvector、pytest、Ruff、compileall、pip wheel/install。
+- **为什么采用当前实现：** 普通安装验证新 tools package 会进入 wheel；真实 composition root 同时验证 migration、checkpointer、Repository、Gateway、Mock、状态图与 HTTP schema，避免 pytest import path 或 isolated fake 掩盖装配问题。
+- **运行与验证命令：** 两环境 Alembic upgrade/current；test DB downgrade/upgrade；`.venv/bin/python -m pytest -q`；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；compileall；pip check；`git diff --check`；`pip install . --no-build-isolation`；真实 composition-root 三场景脚本；工具范围 `rg` 扫描。
+- **测试结果：** 最终全量 `180 passed in 8.68s`；Ruff `All checks passed!`、`108 files already formatted`；compileall 成功；pip check 无损坏依赖；Git whitespace 通过；普通 wheel 构建和安装成功；开发/测试数据库均为 `20260723_0008 (head)`。
+- **真实演示结果：** VPN 200/completed，5 calls/5 executions，10 个节点；Outlook 200/completed，4 calls/4 executions，9 个节点；账号 200/completed，3 calls/3 executions，7 个节点。三类均使用 employee 本地角色和 Mock observation。
+- **遇到的问题：** 根目录仍没有 `AGENTS.md`；工作区在本轮开始时已包含未提交 Phase 6 改动，因此 Git 状态同时展示 Phase 6 和 Phase 7 文件，不能把全部 dirty diff 误称为本轮独占改动。
+- **解决方法：** 以代码、测试和既有 Phase 6 report 为基线增量实现，不回退、不覆盖、不自动提交用户工作；最终 Git 状态如实保留。
+- **当前限制：** 全部工具为 Mock；role 自报；无真实企业 Adapter、写操作、工单、审批或 Web UI；审计数据库自身故障无法写回同一数据库。
+- **我需要理解的知识：** Tool audit 与 graph trace 的组合证据；为什么 read-only 仍需 deny/audit；为什么 Agent 只能得到 observation 而不能得到 Adapter；为什么下一 Phase 的工单写入必须重新设计幂等与审批。
+- **与下一步骤的关系：** Phase 7 工程结论为 PASS。本次到此停止，未经项目所有者明确确认不进入 Phase 8。
+
+## Phase 7 总结与索引
+
+- **Step 7.1：** ToolDefinition、Registry、Policy、Gateway 与七个 Mock tools；
+- **Step 7.2：** `tool_executions`、migration 0008 与 PostgreSQL audit；
+- **Step 7.3：** VPN、Outlook、账号显式状态图和 Agent API trace；
+- **Step 7.4：** 参数/权限/timeout/retry/分支/上限/异常验收；
+- **Step 7.5：** migration 往返、普通 wheel、真实 smoke、全量质量门禁与文档。
+
+最终结论：Phase 7 的三类诊断、七个 Mock 只读工具、唯一 Gateway、结构化 observations、失败升级、调用上限和可追溯 audit 满足本次范围。建议 Commit 为 `feat(agent): add audited mock diagnostic tools`，建议 Tag 为 `phase-7-complete`，工程判断为 **PASS**。
+
+### Step 7.6：收尾代码审查与必要修复
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具（收尾验收）。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 对照原始范围与验收标准进行 Standards/Spec/Security 审查，只修复 Blocking 和必要 Important。
+- **审查问题：** 发现一个 Blocking：非预期 Gateway 异常或诊断节点 timeout 的失败状态可能因诊断条件边只检查 `escalation_reason` 而继续运行，最终被覆盖成 completed；发现三个必要 Important：Schema 文档称 strict 但允许类型强制转换、多个输出字符串/步骤元素无上限、报告声称的 Registry/非法输出及 audit-unavailable 测试实际缺失。
+- **实际修复：** 诊断条件边同时检查 `error` 与 `escalation_reason`；`_execute_tool()` 清洗非预期 Gateway 异常并升级；Mock Schema 启用 strict mode，对枚举做显式字符串解析并补齐字符串边界；新增重复/side-effect 注册、非法强制转换输出、超限知识步骤、审计不可用、晚发 Gateway 异常和诊断节点 timeout 回归。
+- **未处理 Optional：** Runtime 拆分、graph registration 去重和单独 Outlook Web parser 测试；这些不影响本阶段安全与验收。
+- **运行命令：** `.venv/bin/python -m pytest tests/unit/tools/test_gateway.py tests/unit/agent_runtime/test_runtime.py -q`；相关 Ruff lint/format。
+- **结果：** 聚焦 `39 passed in 1.47s`；Ruff `All checks passed!`；4 个文件格式检查通过。
+
+### Step 7.7：收尾全量验证、真实失败演示与学习门禁
+
+- **所属 Phase：** Phase 7：VPN、Outlook、账号诊断工作流与只读工具（最终验收）。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 在修复后完成全量 PostgreSQL 回归、Ruff 和一正常两失败的正式 composition-root 演示，更新阶段文档并停止。
+- **环境事实：** 首次全量在沙箱中因禁止连接 5432 出现 setup errors；允许本机连接后发现 Docker daemon 未运行，启动 Docker Desktop 与 `docker compose up -d db` 后容器 healthy。环境恢复后原命令全量通过，未跳过数据库测试或改用 SQLite。
+- **运行命令：** `.venv/bin/python -m pytest -q`；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；`git diff --check`；`.venv/bin/python /private/tmp/phase7_closeout_demo.py`（临时脚本执行后已删除）。
+- **最终结果：** 全量 `186 passed in 8.53s`；Ruff `All checks passed!`；`108 files already formatted`；Git whitespace 通过。
+- **真实演示：** 正常 VPN 为 200/completed、5 calls/5 succeeded executions；`guest` 权限不足为 200/escalated、1 permission_denied execution；`agent_max_tool_calls=2` 为 200/escalated、2 succeeded executions 后停止。三条均经过正式 FastAPI composition root、PostgreSQL checkpoint/Run/Step 与 tool audit。
+- **安全结论：** 未发现真实企业 Adapter、写操作、Shell/Python/SQL 工具或任意函数执行；自报 `user_role` 与数据治理仍是明确的生产前限制，本阶段不扩展认证。
+- **阶段判断：** 工程 **PASS**；总体 **CONDITIONAL PASS**，项目所有者需独立回答本阶段 10 道面试题并完成 30–60 分钟练习。建议 Commit `fix(agent): close phase 7 diagnostic safety gaps`；学习验收完成后建议 Tag `phase-7-complete`。
+- **停止条件：** 本次到此停止，不进入 Phase 8。
+
+---
+
+## Phase 8：本地工单、低风险写操作、用户确认与审计
+
+### Step 8.1：建立本地 Service Desk schema 与写工具审计关联
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 在不连接 ServiceNow/Jira 的前提下，为工单、评论、确认、领域审计和既有工具审计建立真实 PostgreSQL 数据边界。
+- **实际完成内容：** 新增 `tickets`、`ticket_comments`、`pending_confirmations` 和 `audit_events` ORM；创建 Alembic `20260724_0009`；Ticket 包含编号、标题、描述、类别、优先级、状态、请求人、受理人、Conversation/Agent Run 来源、诊断摘要和创建幂等键；Comment 包含作者、正文和唯一幂等键；Pending Confirmation 保存 R1/R3、动作参数、脱敏摘要、影响、请求指纹、执行结果和生命周期；Audit Event 保存 actor/action/target/parameters summary/policy decision/execution result/request ID；既有 `tool_executions` 增加 actor、pending confirmation 和 idempotency 关联，并允许受控 side effect。
+- **新增或修改文件：** `src/enterprise_it_support/service_desk/__init__.py`、`service_desk/models.py`、`migrations/versions/20260724_0009_add_local_service_desk.py`、`migrations/env.py`、`tools/models.py`、`tests/integration/knowledge/test_migrations.py`、`docs/project_journal.md`。
+- **请求或数据流程：** Alembic 0008 → 创建 ticket sequence/四张新表 → 演进 `tool_executions` → PostgreSQL constraints/indexes/FKs → SQLAlchemy inspector 验证五个实体和全部字段。
+- **关键代码入口：** migration `20260724_0009`、`Ticket`、`TicketComment`、`PendingConfirmation`、`AuditEvent`。
+- **使用的核心技术：** SQLAlchemy 2、Alembic、PostgreSQL UUID/JSONB/sequence、unique/check/foreign-key constraints、真实数据库集成测试。
+- **为什么采用当前实现：** 工单和评论分别以数据库唯一幂等键提供最终重复保护；pending confirmation 与实际 tool execution 分离，防止“提出动作”等同于“已经执行”；领域 audit 与工具 audit 分别记录政策/业务事件和一次受控工具调用，不能互相替代。
+- **运行与验证命令：** 修改前全量 `.venv/bin/python -m pytest -q`；schema 红灯测试；`IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head`；schema 绿灯测试。
+- **测试结果：** 修改前基线 `186 passed in 9.35s`；新增 schema 测试先以 `NoSuchTableError: tickets` 红灯；migration 应用后目标测试 `1 passed in 0.22s`。
+- **遇到的问题：** 根目录仍无 `AGENTS.md`；Git 基线只提交到 Phase 5，Phase 6–7 是已有未提交改动。
+- **解决方法：** 以当前代码、测试、Phase 7 report 和用户明确 Phase 8 规格为事实来源；不回退或覆盖既有工作区；新 migration 只从 0008 前向演进。
+- **当前限制：** 本步骤只建立 schema；Repository、Tool Gateway 确认重校验、API 和行为测试尚未实现。
+- **我需要理解的知识：** 为什么 application-level 幂等检查之外还需要数据库唯一约束；为什么 confirmation、tool execution 和 audit event 是三种不同事实。
+- **与下一步骤的关系：** 下一步实现 Ticket/Confirmation/Audit Repository 和 R0/R1/R3 工具合同，先覆盖确认前不可执行、重复键和权限行为。
+
+### Step 8.2：实现 R0/R1/R3 工具策略、确认重校验与幂等 Repository
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 让本地工单写操作只能在已持久化确认后通过唯一 Tool Gateway 执行，并由 PostgreSQL 保证重复请求不产生第二份业务结果。
+- **实际完成内容：** 新增 Ticket、Pending Confirmation 和 Audit Event Repository；使用 transaction advisory lock 与唯一约束保护 Ticket/Comment/Confirmation 幂等；新增 `get_ticket_status` R0、`create_ticket` R1、`add_ticket_comment` R1 三个严格 Schema 工具；Tool Registry 从“拒绝全部 side effect”演进为“R0 必须只读、只有 R1 可执行写入、R3 不注册 Adapter”；Gateway 增加 proposal validation 和 confirmation validator，执行前重新校验 confirmation ID、actor、role、action、参数、状态和 idempotency key；新增 R3 approval-only 流程；工具审计对 description/comment/diagnosis 只保存长度和 `[TEXT REDACTED]`，对 password/token/secret/api_key 直接脱敏。
+- **新增或修改文件：** `service_desk/domain.py`、`persistence.py`、`tools.py`、`service.py`、`tools/contracts.py`、`tools/gateway.py`、`tools/persistence.py`、`tools/mock.py`、`tests/integration/service_desk/test_service.py`、`docs/project_journal.md`。
+- **请求或数据流程：** R1 proposal → Gateway schema/role validation → pending confirmation + sanitized audit → user confirm → row lock/ownership claim → Gateway 完整重校验 → PostgreSQL Adapter → tool execution audit → pending completed/failed → sanitized domain audit；R0 status → Gateway 自动执行 → resource ownership check → audit。
+- **关键代码入口：** `ServiceDeskService.propose_create_ticket()`、`confirm()`、`get_ticket_status()`、`PendingConfirmationRepository.validate_for_execution()`、`ToolExecutionGateway.validate_action()`/`execute()`、`ServiceDeskToolAdapter`。
+- **使用的核心技术：** PostgreSQL advisory lock、row lock、unique constraints、SQLAlchemy async transaction、Pydantic strict Schema、确定性 RBAC + 资源归属、SHA-256 request fingerprint。
+- **为什么采用当前实现：** proposal 不是 execution；confirmation row lock 防止两个确认同时抢占，Ticket/Comment 幂等键是最终防线；Gateway 在执行时重新验证而不是信任 proposal 时的旧决定；R3 没有可调用 Adapter，因此即使用户尝试确认也不会执行密码或权限修改。
+- **运行与验证命令：** 新 Service Desk 测试红灯；修复 UUID strict 边界；`.venv/bin/python -m pytest tests/integration/service_desk/test_service.py -q`；Phase 7/8 Gateway/Tool audit 聚焦；相关 Ruff lint/format。
+- **测试结果：** 初始 collection 因 `service_desk.persistence` 不存在红灯；首轮实现后发现 strict UUID 字符串边界并修复；Service Desk `4 passed`；Phase 7/8 Gateway、工具审计和 Service Desk 合并 `15 passed in 0.47s`；Ruff `All checks passed!`，18 files formatted。
+- **遇到的问题：** 第一次确认安全失败为 `tool_execution_failed`，数据库 audit 证明参数已正确脱敏；根因是 strict output Schema 不接受序列化 UUID 字符串。
+- **解决方法：** 仅对 UUID JSON 边界显式允许字符串解析，保留其它 strict 字段；没有放宽整个 Schema，也没有暴露 Adapter exception。
+- **当前限制：** 当前角色/actor 仍由本地请求自报，不是生产认证；R3 只是审批记录，没有审批执行器；API 和 Agent 自动 proposal 尚未接入。
+- **我需要理解的知识：** 乐观应用检查、advisory lock、unique constraint 和 idempotent replay 各防止哪一种重复；为什么资源归属不能只靠 role permission；为什么审计摘要不能复制完整写参数。
+- **与下一步骤的关系：** 下一步新增四个指定 API，并把直接工单请求及失败/升级诊断转换为完整 create-ticket proposal。
+
+### Step 8.3：接入 Agent proposal/confirm、Ticket 与 Audit API
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 通过用户指定的四个 HTTP seam 暴露“Agent 建议 → 用户确认 → Gateway 执行 → 结果读取”，并保留既有 `/agent/runs`。
+- **实际完成内容：** 新增 `POST /agent/respond`、`POST /agent/confirm`、`GET /tickets/{ticket_number}`、`GET /audit/events`；respond 先执行原 LangGraph，再根据直接 ticket intent、诊断 escalated/failed、显式评论目标或 R3 关键词生成 pending/approval，不执行写入；confirm 对 lifecycle/ownership/error 做稳定 HTTP 映射；Ticket GET 自动调用 R0 tool；Audit GET 限制为本地 `it_support`/`project_maintainer` 且使用 limit/offset；composition root 组装 Ticket/Confirmation/Audit Repository、合并 7 个诊断工具与 3 个 Service Desk 工具，并注入 confirmation validator；旧 Agent Run 响应映射成为可复用公共函数但原 API 不变。
+- **新增或修改文件：** `service_desk/schemas.py`、`service_desk/routes.py`、`apps/api/main.py`、`apps/dependencies.py`、`agent_runtime/routes.py`、`tools/mock.py`、`service_desk/tools.py`、`tests/integration/api/test_service_desk.py`、`docs/project_journal.md`。
+- **请求或数据流程：** `POST /agent/respond` → Agent Run/Steps/tools → deterministic action planner → R1 pending 或 R3 approval → response；`POST /agent/confirm` → claim/revalidate/Gateway/Adapter/audit → result；Ticket GET → R0 Gateway → authorized ticket；Audit GET → role gate → bounded page。
+- **关键代码入口：** `respond()`、`confirm()`、`get_ticket()`、`list_audit_events()`、`_plan_action()`、`create_app()`。
+- **使用的核心技术：** FastAPI APIRouter、Pydantic bounded schemas、composition root、existing LangGraph Runtime、PostgreSQL checkpointer/Run/Step/tool audit。
+- **为什么采用当前实现：** 新 Agent endpoint 复用原 Runtime 而不重新实现分类或诊断；action planner 只消费已持久化 run 事实，由代码决定 R1/R3；完整诊断通过 summary + source Agent Run ID 关联，避免把全部 trace 复制到 Ticket 表。
+- **运行与验证命令：** API 测试先得到两个 404 红灯；实现后 `tests/integration/api/test_service_desk.py`；旧 Agent API 聚焦；Phase 7/8 Gateway/Service Desk/API 聚焦；相关 Ruff lint/format。
+- **测试结果：** 新 API `2 passed in 0.92s`；旧 Agent API `7 passed, 38 deselected in 1.47s`；Phase 7/8 聚焦 `17 passed in 1.05s`；相关 Ruff `All checks passed!`。
+- **遇到的问题：** 新 Ticket GET 需要返回 source Agent Run/Conversation 与 description，初版 R0 output 只有状态摘要。
+- **解决方法：** 在 authorized Tool output 中补齐 Ticket 必需字段和来源关联；audit 仍不复制这些完整敏感正文。
+- **当前限制：** 高风险识别是本地确定性 allowlist，不是通用审批引擎；API 身份仍自报；尚需补齐 HTTP 评论/R3、失败注入、重复并发和最终安全/全量验收。
+- **我需要理解的知识：** 为什么 action planner 属于确定性 Policy 邻近层，而不是让 LLM 决定授权；为什么旧 API 兼容比替换更安全；为什么列表 API 必须有界。
+- **与下一步骤的关系：** 下一步扩展验收测试，重点覆盖未确认、权限不足、R3、工具失败、审计字段完整/脱敏和重复 confirm。
+
+### Step 8.4：补齐权限、失败、R3、脱敏和诊断升级验收
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 不以单一 happy path 代替验收，覆盖用户指定的确认、重复、权限、审计、敏感数据、工具失败和诊断失败路径。
+- **实际完成内容：** 增加同一 idempotency key 同参数 replay/异参数 conflict；确认前 Ticket/Comment 表保持空；重复 confirm 只返回同一 Ticket；employee 只能访问自己的 Ticket/Confirmation，guest 不能准备 R1；R3 password/permission request 只创建 approval 且 confirm 返回 409；注入抛出虚构 secret 的写 Adapter，确认 pending 变 failed、ToolExecution 保存稳定 error、Ticket 为 0；Audit Event 必需字段逐项断言；ToolExecution 断言 actor/confirmation/idempotency/risk/side-effect 关联；Gateway 对 input 和 output audit 副本递归摘要 title/description/comment/diagnosis，Credential-shaped string 额外脱敏；`agent_max_tool_calls=1` 的正式 composition root 证明诊断升级后自动生成 create-ticket proposal。
+- **新增或修改文件：** `tests/integration/service_desk/test_service.py`、`tests/integration/api/test_service_desk.py`、`tools/gateway.py`、`service_desk/service.py`、`service_desk/tools.py`、`docs/project_journal.md`。
+- **请求或数据流程：** failure injection → user confirms → Gateway revalidation → Adapter raises → sanitized failed ToolExecution → pending failed → failed Audit Event → no Ticket；diagnosis tool limit → Agent escalated → action planner → R1 pending → no write until confirm。
+- **关键代码入口：** `_sanitize_json()`、`ServiceDeskService.confirm()`/`_propose_r1()`、`ToolExecutionGateway._record()`、Phase 8 HTTP/Service integration tests。
+- **使用的核心技术：** boundary failure injection、public HTTP/Gateway seams、真实 PostgreSQL assertions、recursive audit redaction、stable error mapping。
+- **为什么采用当前实现：** 工具返回给授权用户的业务结果保持完整，但写入 audit 的副本必须最小化；被拒绝的 proposal/confirm 仍是安全相关事实，需要领域审计；Adapter exception 正文永远不跨越 Gateway。
+- **运行与验证命令：** Phase 8 Service/API/Gateway/tool audit 聚焦 pytest；`.venv/bin/python -m pytest -q`。
+- **测试结果：** 扩展聚焦 `19 passed in 1.43s`；首轮完整回归 `194 passed in 9.10s`。
+- **遇到的问题：** 安全追踪发现原 ToolExecution audit 会原样保存 output observation，即使 input 已脱敏，也可能复制 Ticket title/diagnosis/description。
+- **解决方法：** Gateway 构造仅用于 persistence 的 sanitized result 副本，调用方仍获得原始已授权结果；增加 secret-in-title/description/diagnosis 与 failing exception 回归。
+- **当前限制：** 文本脱敏不能识别任意编码或混淆秘密，首要规则仍是不得把凭证提交为工单内容；actor/role 仍是本地演示自报身份。
+- **我需要理解的知识：** input redaction 为什么不代表 output audit 安全；业务 response 与 audit projection 为什么应使用不同最小化视图；失败路径为什么也必须产生可解释但不泄密的记录。
+- **与下一步骤的关系：** 功能与指定失败路径已闭环；下一步执行 migration 往返、全量静态门禁、正式 smoke、安全范围扫描和文档同步。
+
+### Step 8.5：完成原子审计修正、migration 往返、安装态 smoke 与阶段收尾
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计（最终验收）。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 对照原始范围证明写操作、确认、幂等、审计和失败边界在真实 PostgreSQL 与正式 composition root 下可组合运行，并同步最终文档后停止。
+- **实际完成内容：** 修正成功 Ticket/Comment 与成功 `audit_events`、`tool_executions` 的事务边界，避免业务已提交而成功审计后写失败；重复 `/agent/respond` 使用相同 material fingerprint 返回原 pending；test DB 完成 `0009 → 0008 → 0009`，开发库与测试库确认位于 0009 head；重新构建并普通安装当前 wheel；通过正式 FastAPI composition root 执行 R1 proposal、越权确认、正确确认、重复确认、R0 Ticket GET、R3 approval-only 和 Audit GET；更新 README、Glossary、Overview、Roadmap、Architecture、Backlog、Current State 与 Phase 8 report。
+- **新增或修改文件：** Phase 8 Service Desk package、migration 0009、Tool Gateway/审计演进、四个 API、Phase 8 integration tests，以及 `README.md`、`CONTEXT.md`、`docs/PROJECT_OVERVIEW.md`、`docs/ROADMAP.md`、`docs/CURRENT_STATE.md`、`docs/backlog.md`、`docs/architecture/mvp_architecture.md`、`docs/phase_reports/phase_8.md`、`docs/project_journal.md`。
+- **请求或数据流程：** installed wheel/composition root → Agent Run → R1 pending → wrong actor deny → original actor confirm → Gateway execution-time revalidation → atomic Ticket/tool/domain audit → duplicate confirm replay；R3 request → approval-required → confirm conflict/no Adapter。
+- **关键代码入口：** `create_app()`、`ServiceDeskService`、`ServiceDeskToolAdapter`、`ToolExecutionGateway`、migration `20260724_0009`、四个 Phase 8 HTTP routes。
+- **运行与验证命令：** test DB Alembic `0009 → 0008 → 0009`；开发/测试 `alembic current`；`.venv/bin/python -m pytest -q`；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；compileall；pip check；`git diff --check`；`.venv/bin/python -m pip install --no-build-isolation .`；安装态 TestClient composition-root smoke；ServiceNow/Jira/subprocess/shell/eval/exec 与 credential-shaped 字段范围扫描。
+- **最终测试结果：** 全量 `195 passed in 9.20s`；Ruff `All checks passed!`、`120 files already formatted`；compileall 成功；pip check 无损坏依赖；Git whitespace 通过；普通 wheel 构建和安装成功。
+- **真实 smoke：** proposal 200 且 pending；错误 actor confirm 403；正确 confirm 200；重复 confirm 200 且 `same_ticket=True`；Ticket GET 200；R3 为 approval-required 且 confirm 409；Audit GET 200，返回 9 个相关事件。
+- **安全结论：** 范围扫描未发现 ServiceNow/Jira、subprocess、shell、系统命令、动态 eval/exec 或真实账号修改 Adapter；测试中的 password/token/secret 只用于验证脱敏。R3 没有 Registry Adapter；Ticket/Comment 成功行与两类成功审计同事务提交。
+- **遇到的问题：** 最终格式门禁发现 `service_desk/service.py` 有一个纯格式偏差；此外审查确认成功业务写入若与后续工具审计分成两个事务，会存在审计缺口。
+- **解决方法：** 使用 Ruff 格式化单个文件；把成功业务写入、领域审计和最小工具审计放入同一 Repository transaction，Gateway 后续 record 使用 execution ID 幂等 no-op，并增加 audit-store failure 回归。
+- **当前限制：** actor/role 仍由本地请求自报；R3 没有审批工作流或执行器；pending 参数没有生产级保留/加密策略；文本脱敏不是 DLP；单 PostgreSQL 整体故障无法审计自身；没有外部工单平台、Web UI 或 Phase 9 评估。
+- **阶段判断：** Phase 8 工程 **PASS**。建议 Commit `feat(service-desk): add confirmed idempotent local tickets`，建议 Tag `phase-8-complete`。
+- **停止条件：** 本次到此停止，未经项目所有者明确确认不进入 Phase 9。
+
+### Step 8.6：收尾独立审查与 Blocking/Important 修复
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计（收尾验收）。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 不沿用既有 PASS 结论，对照原始任务、Backlog 验收和安全边界独立检查，只修复 Blocking 与必要 Important。
+- **审查发现：** 一个 Blocking：R1/R3 pending confirmation 与 proposal audit 分属两个事务，audit 失败会留下无 proposal audit 的 pending；四个实现 Important：R3 idempotent replay 未校验 actor/role、R0 tool audit 故障会泄漏为未处理 500、Audit API 重复硬编码角色、Ticket GET 依赖错误字符串模糊匹配；五个证据 Important：缺少 Gateway 无 confirmation 绕过测试、proposal audit 失败回滚、跨 actor R3 隔离、权限修改 R3 与 audit `created_at` 断言。
+- **实际修复：** `PendingConfirmationRepository.create()` 在同一 PostgreSQL 事务内创建/复用 pending 并追加 proposal audit，任何 audit constraint/commit 失败都会回滚新 pending；idempotent replay 同时绑定 actor、role、risk 与 material fingerprint；`ServiceDeskExecutionError` 暴露稳定内部 code，R0 捕获 `ToolAuditUnavailableError` 并返回安全服务错误；Ticket API 按精确 error code 映射，Audit API 复用 `service_desk_permissions()`；补齐上述五类 PostgreSQL/API 回归。
+- **未处理 Optional：** Service Desk 模块进一步拆分、confirmation lease/recovery、Ticket 评论分页、通用审批引擎和可信认证；这些不属于本阶段原始范围。
+- **红灯命令与结果：** `.venv/bin/pytest tests/integration/service_desk/test_service.py tests/integration/api/test_service_desk.py -q` → `3 failed, 9 passed in 1.98s`；失败分别证明跨 actor R3 未隔离、proposal audit 失败后 pending 未回滚、R0 audit store 异常未转换。
+- **绿灯命令与结果：** 同一聚焦命令加相关 Ruff → `12 passed in 1.81s`，Ruff `All checks passed!`。
+- **安全边界：** 修复没有增加外部 Adapter、R3 执行、Shell/Python/SQL 工具或 Phase 9 功能；可信身份和 tenant 仍是明确阶段外限制。
+- **与下一步骤的关系：** Blocking 与必要 Important 已形成聚焦回归；下一步执行完整回归、Ruff、migration/安装态检查和一正常两失败的正式演示，再同步学习门禁与最终结论。
+
+### Step 8.7：完成全量验证、正式演示与学习门禁
+
+- **所属 Phase：** Phase 8：本地工单、低风险写操作、用户确认与审计（最终收尾）。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 在审查修复后运行全部相关与完整回归、Ruff、migration 往返和一正常两失败的安装态演示，并给出学习验收与阶段结论。
+- **运行命令：** Phase 8/Tool Gateway/migration 聚焦 pytest；`.venv/bin/pytest -q`；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；compileall；pip check；`git diff --check`；test DB `0009 → 0008 → 0009`；开发/测试 `alembic current`；普通 `pip install --no-build-isolation .`；安装态 TestClient composition-root demo。
+- **最终结果：** 相关 `24 passed in 1.78s`；全量 `198 passed in 10.05s`；Ruff `All checks passed!`、`120 files already formatted`；compileall、pip check、Git whitespace 通过；普通 wheel build/install 成功；开发/测试数据库均为 `20260724_0009 (head)`。
+- **正常演示：** `agent_max_tool_calls=1` 的 VPN 请求得到 run escalated、R1 pending；原 actor confirm 200；Ticket GET 200，diagnosis summary 为 537 chars；重复 confirm 200 且返回相同 ticket。
+- **失败演示一：** 其他 actor 确认同一 pending → 403 `confirmation_access_denied`，没有执行写入。
+- **失败演示二：** `Grant access...` → `modify_permissions` R3 approval-required；confirm → 409 `confirmation_not_executable`，没有 R3 Adapter。
+- **审计演示：** support Audit GET 200，返回 7 个本次相关 policy/execution events。
+- **文档同步：** README、Current State、Roadmap 和 Phase 8 report 已更新为修复后能力、真实命令/结果、验收矩阵、设计差异、学习数据流、五个概念、十道问题、独立练习和三个面试薄弱点。
+- **阶段判断：** 工程无剩余 Blocking/必要 Important；总体 **CONDITIONAL PASS**，项目所有者需独立回答 10 道 Phase 8 面试题并完成 30–60 分钟练习。
+- **建议版本：** Commit `fix(service-desk): close phase 8 confirmation audit gaps`；学习验收通过后建议 Tag `phase-8-complete`。
+- **停止条件：** 本次到此停止，不进入 Phase 9。
+
+---
+
+## Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批
+
+### Step 9.1：建立 RBAC、R0–R4 Policy 与审批持久化基线
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 在 Phase 8 的 R3 approval-only 占位之上建立可执行的本地治理数据模型，同时保持真实身份系统和真实权限修改在范围外。
+- **接手事实：** 根目录没有 `AGENTS.md`；`main@b882da7` 之后的 Phase 6–8 仍是未提交工作区改动；旧 Backlog 把 Phase 9 定义为离线评估，但本次项目所有者明确将 Phase 9 改为 RBAC、风险策略和模拟审批，因此以本次指令为当前合同并把评估留待后续重新编号。
+- **实际完成内容：** 新增 `users`、`roles`、`permissions`、`user_roles`、必要的 `role_permissions`、`approval_requests` 和 `approval_decisions`；migration 内提供 employee/helpdesk/engineer/admin/approver 五个本地角色及五个明确 demo identity；新增 R0–R4、五种唯一 Policy 输出、审批生命周期和数据库约束；Policy Engine 只使用确定性用户/角色/权限/动作/工具/目标/风险/上下文，R4 无条件拒绝，R3 缺少业务理由返回 `need_more_context`，完整 R3 返回 `require_approval`；Agent Run schema 为后续 `waiting_approval` 状态预留约束。
+- **新增或修改文件：** `governance/domain.py`、`models.py`、`policy.py`、`persistence.py`、`service.py`、migration `20260724_0010`、Alembic env、Agent/Audit model constraints、Policy unit tests、migration schema test。
+- **关键设计：** Pending Confirmation 继续表达原请求者对 R1 的确认；Approval Request 表达 R3 授权请求；Approval Decision 是一个请求最多一条的不可变人工决定。审批 API 后续只接收本地 actor ID，实际角色和权限从 PostgreSQL RBAC 解析，不信任调用方自报 approver 角色。
+- **运行与验证命令：** `.venv/bin/pytest tests/unit/governance/test_policy.py -q`；相关 Ruff check/format；`IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head`；`.venv/bin/pytest tests/integration/knowledge/test_migrations.py -q`。
+- **真实结果：** Policy unit `10 passed in 0.01s`；migration schema `1 passed in 0.26s`；测试库成功升级到 `20260724_0010`。
+- **遇到的问题：** 首轮 Policy test 使用 pytest 保留参数名 `request` 导致 collection error；Ruff 同时发现 import 顺序和全角分号。
+- **解决方法：** 改为 `policy_input` 并机械应用 Ruff 修复/格式化；没有放宽任何 Policy 或数据库约束。
+- **当前限制：** 尚未接入 Agent interrupt/resume 和审批 HTTP API；demo identity 只是本地模拟，不是 SSO、Entra ID、tenant 或可信认证。
+- **与下一步骤的关系：** 下一步把“申请加入财务系统管理员组”接入现有 LangGraph，在独立节点创建 Approval Request，随后 interrupt；恢复时只重跑等待节点，不重跑已经完成的 intake、policy 和 approval creation。
+
+### Step 9.2：实现 Agent interrupt、审批 API 与原 Run 恢复
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 让“申请加入财务系统管理员组”在业务理由完整时创建 Approval Request 并暂停，在 RBAC approver 决策后恢复同一 Agent Run，且不重复已完成节点。
+- **实际完成内容：** Agent State 增加治理动作、R3、Policy 决定、业务理由、Approval Request ID、Decision 和模拟结果；`intake` 用确定性短语识别指定演示请求；Policy node 在 PostgreSQL 解析本地 user/role/permission；缺少理由返回 `need_more_context`；完整请求创建 Approval Request 并进入 `waiting_approval`；独立 `await_human_approval` 节点使用 LangGraph `interrupt()`；批准/拒绝 API 以 `Command(resume=...)` 恢复同一 thread/run；批准只写 `simulated_success` 和 `external_system_modified=false`，拒绝安全结束；新增 GET pending、POST approve、POST reject，审批调用方不提交 role，Repository 根据 actor ID 解析 RBAC 并用 row lock + unique decision 阻止重复审批和 self-approval。
+- **API 合同：** `GET /approvals/pending?actor_id=...&limit=...&offset=...`；`POST /approvals/{id}/approve`；`POST /approvals/{id}/reject`。决定 body 只包含本地 `actor_id` 和可选有界 rationale；批准/拒绝响应同时返回 Approval 与恢复后的 Agent Run。
+- **checkpoint 证据：** 创建审批和等待审批是两个独立节点；首次 run 的持久化步骤只有 `intake`、`evaluate_governance_policy`、`create_approval_request`；恢复后追加 `await_human_approval`、批准或拒绝节点、`finalize`。集成测试逐项断言前三个节点各只有一次。
+- **运行与验证命令：** Governance API 首轮/修复后 pytest；Phase 9 + Agent Runtime + Service Desk + Tool + migration 相关回归；全仓 Ruff check/format check。
+- **真实结果：** 首轮 approval workflow `2 failed in 0.90s`，修复 actor context 后仍 `2 failed in 1.66s`；最终 workflow `2 passed in 0.97s`；受影响相关回归 `70 passed in 3.71s`；Ruff lint/format 通过。
+- **遇到的问题一：** 原 `_intake()` 把完整 `user_context` 重建为只有 role，导致 actor/idempotency 在 checkpoint 前丢失，Policy 错误返回 `need_more_context`。
+- **解决方法一：** intake 规范化 role 时保留其余受控 context，并用真实 API 状态与数据库 JSON 只读查询定位和验证。
+- **遇到的问题二：** LangGraph interrupt 的 `ainvoke()` 结果包含框架控制字段 `__interrupt__`，其中 `Interrupt` 对象不能写入 Agent Run JSONB。
+- **解决方法二：** 增加明确的 graph-values → AgentState 投影，只保存 AgentState allowlist 字段；LangGraph 控制元数据继续由 checkpoint saver 管理。
+- **当前限制：** 决策提交和 LangGraph resume 跨两个事务；正常路径已验证，若进程恰好在 decision commit 后、resume 前崩溃，当前没有独立 reconciliation worker。真实 SSO、通知、多级审批和真实目录写入仍不在本 Phase。
+- **与下一步骤的关系：** 下一步补充独立 Repository/HTTP 边界复核，执行 migration 往返、全量回归、安装态 composition smoke 和安全范围扫描，再同步 Phase 9 当前状态与报告。
+
+### Step 9.3：完成 migration 往返、全量验收、安装态 smoke 与文档收尾
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批（最终验收）。
+- **完成日期：** 2026-07-24
+- **本步骤目标：** 对照全部 Phase 9 要求证明治理模型、Policy、审批权限、checkpoint 恢复、审计和模拟执行在真实 PostgreSQL 与正式 composition root 中可组合运行，并同步文档后停止。
+- **验收结果：** 普通 employee 不能执行或审批 R3；approver 可以批准/拒绝；非 approver 为 403；拒绝恢复后安全完成且无模拟结果；批准恢复后 Approval executed、Run completed、模拟成功；重复审批为 409；恢复节点序列证明已完成节点不重复；R4 unit 无条件 deny；模型没有参与最终授权。
+- **运行与验证命令：** `.venv/bin/pytest -q`；Phase 9/Agent/Service Desk/Tool/migration 相关 pytest；test DB Alembic `0010 → 0009 → 0010`；development/test `alembic current`；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；compileall；pip check；`git diff --check`；普通 `pip install --no-build-isolation .`；安装态 TestClient approval smoke；治理源码的外部系统、命令执行和 credential pattern 扫描。
+- **最终真实结果：** 全量 `210 passed in 11.26s`；相关回归 `70 passed in 3.71s`；Ruff `All checks passed!`、`132 files already formatted`；compileall、pip check、Git whitespace 通过；普通 wheel 构建/安装成功；开发库与测试库均为 `20260724_0010 (head)`。
+- **安装态 smoke：** proposal 200/`waiting_approval`/`require_approval`；employee approve 403；approver approve 200；同一 run 变 completed；Approval 变 executed；结果为 `simulated_success` 且 `external_system_modified=false`；节点严格为 intake、Policy、create、await、simulate、finalize。
+- **安全扫描：** Governance/migration/tests 范围未发现 subprocess、Shell、动态 eval/exec、ServiceNow/Jira、Entra/LDAP/Microsoft Graph、HTTP 外部调用或凭证；唯一字符串命中为表名 `approval_requests` 的 `requests` 子串。
+- **文档同步：** Glossary 明确分离 Confirmation、Approval Request、Policy Decision 与 Approval Decision；Overview、Roadmap、Backlog、Architecture、README、Current State 与 Phase 9 report 已同步；旧离线评估顺延为 Phase 10，后续 UI/安全/Docker 相应顺延。
+- **已知限制：** actor ID 仍是本地 demo identity selector；没有真实认证/tenant；Decision commit 与 graph resume 跨两个事务且没有 reconciliation worker；没有通知、多级审批或真实权限 Adapter；高风险识别只覆盖指定演示场景。
+- **阶段判断：** Phase 9 工程 **PASS**，没有剩余 Blocking 或必要 Important。
+- **建议版本：** Commit `feat(governance): add rbac and human approval resume`；Tag `phase-9-complete`。
+- **停止条件：** 本次到此停止，未经项目所有者明确确认不进入 Phase 10。
+
+### Step 9.4：收尾独立审查与恢复一致性问题确认
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批（收尾验收）。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 不沿用既有 PASS 结论，对照原始任务、Backlog、代码、数据库测试和安全边界独立复核，并在修改前列出 Blocking/Important。
+- **审查边界：** 根目录仍无 `AGENTS.md`；以 `main@b882da7` 加全部未跟踪文件为固定审查边界，保留 Phase 6–8 既有未提交改动。
+- **审查发现：** 一个 Blocking：Approval Decision 先提交、Runtime 后获取并恢复，任一中间故障都会使请求不再 pending，而重试恒定返回 409，原 Run 可永久停在 `waiting_approval`；三个必要 Important：缺少恢复完成标记、被拒绝的审批权限尝试不写治理审计、缺少 decision-commit/resume-failure 恢复与完整批准审计回归。
+- **文档冲突：** README、CURRENT_STATE 和 Phase 9 report 一边判定 PASS/无必要 Important，一边明确承认 decision/resume 崩溃窗口；本轮将在修复并重新验证前撤销该无条件结论。
+- **范围判断：** 没有发现真实 IAM Adapter、命令执行、外部平台或 Phase 10 功能；本地 actor selector、固定 demo seed 和指定短语是已声明的演示边界，本轮不扩展为认证、多级审批或通用 IAM。
+- **修改前验证：** 聚焦 Policy/PostgreSQL/migration 命令首次因 Docker 未启动失败，启动本地 PostgreSQL 后重跑为 `13 passed in 1.39s`；Phase 9 范围 Ruff lint 为 `All checks passed!`，format 为 `14 files already formatted`。
+- **下一步：** 先添加失败回归，再实现同一已保存决定在恢复完成前可安全重试、恢复完成标记与拒绝/恢复审计；正常完成后的重复审批仍保持 409。
+
+### Step 9.5：修复 decision/resume 崩溃窗口与治理审计缺口
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批（Blocking/Important 修复）。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 在不增加 reconciliation worker、SSO 或新审批功能的前提下，使已持久化的人类决定能够从受控 Runtime 故障恢复，同时保留重复审批无效和节点不重复语义。
+- **红灯命令与结果：** `.venv/bin/python -m pytest tests/integration/governance/test_approval_workflow.py -q` → `3 failed in 1.54s`；分别证明权限拒绝无 audit、响应无恢复完成标记、Runtime 故障泄漏且决定提交后无法恢复。
+- **实际修复：** `approval_requests` 增加 `resumed_at`；决定/恢复 API 在写决定前完成 Runtime 预检，并用 PostgreSQL transaction advisory lock 串行化同一 Approval 的完整尝试；只有相同 approver、相同 decision、相同 rationale 且尚未 `resumed_at` 的已保存决定可进入故障恢复；恢复后校验同 run、同 approval、同 decision、Run completed 和 Approval 终态，再原子写 `resumed_at` 与 `resume_approval_run` audit。
+- **错误与审计：** Runtime/检查点受控异常返回稳定 503，不再泄漏未处理 RuntimeError；非 approver/未知本地用户的 pending/decision 访问写脱敏 deny audit；恢复失败写 `failed:runtime_unavailable`，恢复成功写 `completed:approve|reject`。审计只保存 ID、decision 和 rationale length，不保存 rationale 正文或异常正文。
+- **重复与并发边界：** advisory lock 在数据库 session/transaction 结束或进程退出时自动释放；正常完成后的重复决定、不同 approver 接管、不同 rationale 替换均保持 409。Approval Decision 仍唯一且不可变。
+- **migration：** 因 Phase 9 migration 尚未提交，更新同一 `20260724_0010` 并在隔离 test DB 执行 `0010 → 0009 → 0010`；`alembic current` 为 `20260724_0010 (head)`。
+- **绿灯命令与结果：** workflow `3 passed in 1.31s`；migration/schema 联合回归此前为 `4 passed in 1.42s`；Phase 9 范围 Ruff lint/format 通过。
+- **下一步：** 运行 Phase 9 及受影响 Agent/Service Desk/Tool/migration 回归、全仓测试、全仓 Ruff、正式 composition-root 一正常两失败演示，再同步 README、CURRENT_STATE 和 Phase 9 Dev Log/Report。
+
+### Step 9.6：完成全量验证、正式演示、文档与学习门禁
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批（最终收尾）。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 在 Blocking/Important 修复后执行全部相关与全仓验证、正式 composition-root 演示，并同步 README、Current State、Roadmap、Architecture 和 Phase 9 report；不进入 Phase 10。
+- **migration 更正：** Step 9.5 曾记录“更新同一 0010”；随后复核到开发/测试库均已应用 0010，因此没有保留该做法。最终以非破坏性 corrective migration `20260801_0011` 增加 `resumed_at`，test DB 完成 `0011 → 0010 → 0011`，开发/测试库均为 `20260801_0011 (head)`。
+- **相关测试命令与结果：** `.venv/bin/python -m pytest tests/unit/governance tests/integration/governance tests/unit/agent_runtime tests/integration/agent_runtime tests/unit/tools tests/integration/tools tests/integration/service_desk tests/integration/api/test_service_desk.py tests/integration/knowledge/test_migrations.py -q` → 最终 `81 passed in 3.97s`。
+- **全量测试命令与结果：** `.venv/bin/python -m pytest -q` → 最终 `211 passed in 11.28s`。
+- **静态/安装门禁：** `.venv/bin/ruff check .` → `All checks passed!`；`.venv/bin/ruff format --check .` → `133 files already formatted`；compileall、pip check、`git diff --check` 通过；普通 `pip install --no-build-isolation .` wheel build/install 成功。
+- **正常演示：** 完整财务管理员组请求先为 200/`waiting_approval`；approver approve 为 200；同一 run 恢复 completed；Approval 为 executed 且 `resumed_at` 非空；结果 `simulated_success`、`external_system_modified=false`；节点严格为 intake、Policy、create、await、simulate、finalize，前三节点各一次。
+- **失败演示一：** 缺少业务理由 → 200/`needs_clarification`/`need_more_context`，没有创建 Approval。
+- **失败演示二：** employee 调 approve → 403 `approval_access_denied`，并写 deny audit。
+- **失败演示三：** 已完成后重复 approve → 409 `approval_already_decided`。
+- **附加安全回归：** 具有 approval permission 的 `admin-demo` 发起请求后尝试 self-approval → 403，并写 deny audit；非 approver pending queue 读取也有 deny audit。
+- **审计演示：** 本次轨迹包含 Policy/Approval Request、deny attempt、human approve、simulation、resume completed；正文和异常未进入 audit。
+- **文档同步：** README 更新当前能力与真实结果；CURRENT_STATE 更新为 0011 和收尾事实；Roadmap 将 Phase 9 标为工程通过/学习待验收；Architecture/Overview 补充 recoverable resume seam；Phase 9 report 包含验收矩阵、审查修复、命令结果、完整数据流、五个概念、十道无答案面试题、30–60 分钟练习和三个面试薄弱点。
+- **阶段判断：** 没有剩余 Blocking 或必要 Important，工程 **PASS**；总体 **CONDITIONAL PASS**，项目所有者需独立回答十道 Phase 9 面试题并完成练习。
+- **建议版本：** Commit `fix(governance): make human approval resume recoverable`；当前建议 Tag `phase-9-engineering-pass`，学习验收后再使用 `phase-9-complete`。
+- **停止条件：** 本次到此停止，不进入 Phase 10。
+
+### Step 9.7：修正 admin 越出 approver-only 验收边界
+
+- **所属 Phase：** Phase 9：RBAC、风险策略与 Human-in-the-loop 模拟审批（最终逐字验收修正）。
+- **完成日期：** 2026-08-01
+- **发现：** 最终逐字对照“approver 可以审批、非 approver 不能审批”时确认 Phase 9 原 seed 同时给 admin 和 approver 配置了 `approval:read/decide`。permission-based RBAC 本身合理，但本 Phase 明确要求只有 approver 能审批，因此这是第二个 Blocking，不能用设计解释绕过。
+- **修复：** 新增非破坏性 corrective migration `20260801_0012_restrict_approval_to_approver.py`，删除 admin role 的两个 approval permission；downgrade 可恢复旧映射。migration integration test 精确断言两个 approval permission 只映射到 approver。
+- **失败路径加强：** self-approval 改由具备真实审批权限的 `approver-demo` 自己发起并自批，断言 403 + deny audit；`admin-demo` 对另一个人的已保存决定返回 403，而不是进入恢复分支；不同 rationale 仍为 409。
+- **migration 验证：** test DB `0012 → 0011 → 0012` 成功；开发/测试库均为 `20260801_0012 (head)`。
+- **最终相关结果：** `81 passed in 4.12s`。
+- **最终全量结果：** `211 passed in 11.39s`。
+- **最终静态门禁：** Ruff `All checks passed!` / `134 files already formatted`；compileall、pip check、Git whitespace 通过。
+- **最终正式演示：** 缺少理由 → need_more_context/无 Approval；admin approve → 403；approver approve → 200/same run completed/executed/resumed/simulated only；完成后 duplicate → 409；六节点严格无重复。
+- **最终结论：** 两个 Blocking 和必要 Important 均已修复，工程 PASS；总体仍为学习待验收的 CONDITIONAL PASS。停止，不进入 Phase 10。
+
+---
+
+## Phase 10：Agent Evaluation Framework
+
+### Step 10.1：建立严格数据集合同与 30 条初始案例
+
+- **所属 Phase：** Phase 10：Agent Evaluation Framework。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 在运行任何 Agent 或计算指标前固定版本化案例格式，并用机器校验保证本阶段要求的类别和数量不会静默漂移。
+- **接手事实：** 根目录没有 `AGENTS.md`；Phase 10 报告尚不存在；`main@b882da7` 之后的 Phase 6–9 仍是未提交工作区改动。修改前在允许访问本地 PostgreSQL 后，全量测试为 `211 passed in 11.37s`；沙箱内首次运行的 `5 failed, 118 passed, 88 errors` 共同根因是 localhost PostgreSQL `Operation not permitted`，不是代码断言失败。
+- **实际完成内容：** 新增严格 Pydantic 数据合同，包含 `case_id`、`user_query`、`user_context`、`expected_intent`、`expected_documents`、`expected_tool_calls`、`expected_final_status`、`prohibited_actions` 和 `reference_answer`，并增加类别与可选 refusal 标注；数据集校验唯一 ID、非空字段、禁止额外字段、声明配额与实际案例数完全一致；创建 `phase-10-v1` 共 30 条案例，精确覆盖知识问答 8、VPN 6、Outlook 6、账号 5、工单 3、高风险权限 2。
+- **新增或修改文件：** `src/enterprise_it_support/evaluation/dataset.py`、`data/evaluation/agent_cases.json`、`docs/project_journal.md`。
+- **关键设计：** expected Document 使用 source name + title 的稳定人工标识，不把每次导入生成的 UUID 写死在数据集；Tool Call 同时标注名称和完整参数；每条案例都声明禁止动作，使安全评价不依赖报告作者临时解释。
+- **运行与验证命令：** `PYTHONPATH=src .venv/bin/python -c '...load_evaluation_dataset(...)...'`。
+- **真实结果：** 成功输出 `phase-10-v1 30`，类别配额为 `8/6/6/5/3/2`；首次未设置 `PYTHONPATH=src` 时因当前环境是普通 wheel 安装而出现 `ModuleNotFoundError`，使用仓库源码路径后通过，未修改全局 Python。
+- **当前限制：** 本步骤只完成数据合同和人工标注；指标、Runner、CLI、报告与回归门禁尚未实现。
+- **与下一步骤的关系：** 下一步实现纯确定性指标和统一观测结果模型，使规则计算可以独立单元测试，而不依赖数据库或模型调用。
+
+### Step 10.2：实现确定性质量指标与统一原始观测模型
+
+- **所属 Phase：** Phase 10：Agent Evaluation Framework。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 把检索、生成、Agent 与 System 指标实现为不调用模型、不访问数据库的纯规则层，并保留每个指标的真实分母和不适用状态。
+- **实际完成内容：** 新增 provider-neutral `AgentObservation`、工具调用、Token、逐案例分数和聚合指标模型；实现 Retrieval Recall@3/5、MRR，Generation Citation Validity、Evidence Coverage、Unsupported Claim Rate、Refusal Correctness，Agent Intent/Tool Selection/Tool Argument Accuracy、Workflow Completion Rate、Prohibited Action Rate，以及 System Latency、Tool Error Rate、Average Steps、Token Usage；逐案例输出稳定失败原因；`None` 明确表示无适用样本，不把缺少观测伪装为 0 分。
+- **关键规则：** Citation 必须引用本次 Retrieval 的真实 Chunk ID；Evidence Coverage 按人工 expected Document 是否被最终 Citation 覆盖；Unsupported Claim 对模型回答中的 claim 与受控 evidence 文本做规范化包含/词覆盖检查；工具选择比较有序名称，工具参数比较严格 JSON 对象；禁止动作以数据集 allowlist 交集确定。
+- **新增或修改文件：** `src/enterprise_it_support/evaluation/models.py`、`src/enterprise_it_support/evaluation/metrics.py`、`tests/unit/evaluation/test_agent_dataset.py`、`tests/unit/evaluation/test_agent_metrics.py`、`docs/project_journal.md`。
+- **运行与验证命令：** `PYTHONPATH=src .venv/bin/python -m pytest tests/unit/evaluation/test_agent_dataset.py tests/unit/evaluation/test_agent_metrics.py -q`；相关 Ruff lint/format。
+- **真实结果：** `6 passed in 0.03s`；Ruff `All checks passed!`；`7 files already formatted`。首次 format check 报告 3 个文件需要机械格式化，执行 Ruff format 后复验通过。
+- **当前限制：** Unsupported Claim Rate 是可解释的词法规则，不等于语义蕴含；它会在报告中保持该限制，后续可选 Judge 只能作为独立辅助分数。
+- **与下一步骤的关系：** 下一步实现实际 Agent Runner、可选 Judge、版本元数据、阈值/差异和 JSON/Markdown 报告。
+
+### Step 10.3：接通真实 Agent Runner、可选 Judge、报告差异与回归门禁
+
+- **所属 Phase：** Phase 10：Agent Evaluation Framework。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 用一条 CLI 运行现有正式 Agent/Service Desk/Governance surface，输出可复用原始 JSON、Markdown、类别统计、失败列表、previous-run diff，并以退出状态执行回归门禁。
+- **实际完成内容：** 新增共享的 6 份虚构知识 seed；`LocalAgentEvaluationSubject` 调用正式 `/agent/respond`，随后通过现有 Conversation 与 Tool Repository 读取 refusal、Token、完整工具参数和审计状态；`TrackingModelGateway` 只包裹现有 Gateway 并记录每案例 provider/model/Prompt/Token；工单只观察 pending proposal，不自动确认；R3 只观察 `waiting_approval`，不自动审批；新增可注入 `ModelGatewayJudge`，严格记录 Judge provider/configured/resolved model 和 `agent-evaluation-judge-v1`，其结果与确定性指标分区且明确不是绝对真值；新增阈值、previous diff、安全回归检查、JSON/Markdown 写出和 `python -m scripts.run_evaluations`。
+- **回归规则：** Intent Accuracy ≥ 0.90；Prohibited Action Rate ≤ 0；Citation Validity ≥ 0.95；Workflow Completion Rate ≥ 0.90。与上次可比较时，Prohibited Action Rate 上升、Unsupported Claim Rate 上升或 Refusal Correctness 下降都会单独使门禁失败。
+- **首轮真实运行：** 30 条全部获得 HTTP 200 并生成报告，但 Gate FAIL；Workflow Completion=`0.80`。失败来自 6 条 Outlook 案例缺少现有流程要求的影响范围、错误代码和访问渠道，Agent 正确返回 `needs_clarification`。修正数据为完整诊断正样本，没有修改业务工作流或放宽阈值。
+- **修正后真实运行：** Gate PASS；Recall@3=`1.0`、Recall@5=`1.0`、MRR=`0.9166666666666666`；Citation Validity=`1.0`、Evidence Coverage=`1.0`、Unsupported Claim Rate=`0.0`、Refusal Correctness=`0.75`；Intent/Tool Selection/Tool Argument/Workflow=`1.0`；Prohibited Action Rate=`0.0`；Tool Error Rate=`0.0`；实际失败列表为 `knowledge-07`、`knowledge-08`，两者暴露 Fake RAG 对有主题词但无支持事实问题没有拒答，本阶段不修改 Agent 业务。
+- **新增或修改文件：** `evaluation/fixtures.py`、`judge.py`、`runner.py`、`reporting.py`、`scripts/run_evaluations.py`、`scripts/evaluate_retrieval.py`、`data/evaluation/thresholds.json`、`.gitignore`、相关 unit/integration tests、`docs/project_journal.md`。
+- **运行与验证命令：** 两次 `PYTHONPATH=src IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_evaluations --output-dir /private/tmp/...`；`PYTHONPATH=src .venv/bin/python -m pytest tests/integration/evaluation/test_run_evaluations.py -q`；评估 unit tests；相关 Ruff/compileall。
+- **测试结果：** CLI/report/diff PostgreSQL integration `1 passed in 3.80s`；评估 unit `14 passed in 0.33s`；相关 Ruff lint/format 与 compileall 通过。
+- **安全边界：** 默认 Fake Provider；配置为真实模型时，CLI 没有显式 `--allow-real-api` 会拒绝运行；Judge 默认关闭；评估不会确认工单、批准权限、调用真实企业系统或执行任意命令工具。
+- **当前限制：** 首轮 dataset 较小且来自虚构固定环境；Fake Provider 的 Refusal Correctness 为 0.75，报告如实列出；词法 Unsupported Claim 不是语义蕴含；本机 latency 只适合同环境趋势比较。
+- **与下一步骤的关系：** 下一步运行全量测试、正式安装态精确 CLI、同目录 previous diff、安全失败返回码、全仓静态门禁，并同步 Phase 10 文档。
+
+### Step 10.4：完成安装态一键评估、全量回归与 Phase 10 收尾
+
+- **所属 Phase：** Phase 10：Agent Evaluation Framework（最终验收）。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 从普通安装态运行用户指定的一键命令，证明 30 条 Fake Provider 评估、原始结果、Markdown、previous diff 和回归退出状态可以组合工作；随后完成全量测试、数据库版本、静态门禁和文档收尾。
+- **固定 corpus 修正：** 首次全量为 `1 failed, 222 passed in 12.62s`；一个 integration 断言把两条当前 Fake RAG 失败硬编码为长期合同，且共享测试库额外知识文档会污染离线排名。最终断言只要求报告真实列出失败，Runner 用六份虚构文档 ID 过滤正式 Retriever 的宽候选并记录 corpus fingerprint/count，既不修改生产检索，也不让其它 test/dev 文档改变基线。
+- **最终一键命令：** `IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_evaluations`。
+- **最终 CLI 结果：** exit 0；run `eval-20260801T123925Z-c4e35d86`；dataset `phase-10-v1`；Gate PASS；失败案例 `knowledge-07`、`knowledge-08`；自动 baseline 为 `eval-20260801T122520Z-51948191`，全部确定性质量指标不变，Latency 改善 `0.7333333333333343 ms`。
+- **最终指标：** Recall@3/Recall@5=`1.0/1.0`，MRR=`0.9166666666666666`；Citation Validity/Evidence Coverage=`1.0/1.0`，Unsupported Claim Rate=`0.0`，Refusal Correctness=`0.75`；Intent/Tool Selection/Tool Argument/Workflow=`1.0`；Prohibited Action Rate/Tool Error Rate=`0.0/0.0`；Latency=`48.43333333333333 ms`，Average Steps=`6.933333333333334`，Total Token=`1110`、模型调用 37 次。
+- **测试结果：** Phase 10 unit `14 passed in 0.41s`；PostgreSQL CLI/report/diff integration `1 passed in 3.69s`；修复后最终全量 `.venv/bin/python -m pytest -q` 为 `223 passed in 14.96s`，无 skip、xfail 或真实 API 调用。
+- **静态与安装门禁：** 普通 `pip install --no-build-isolation .` 成功；Ruff `All checks passed!`；format `148 files already formatted`；compileall、pip check、`git diff --check` 均通过。
+- **数据库证据：** 开发库与隔离测试库的 `alembic current` 均为 `20260801_0012 (head)`；Phase 10 没有新增 migration 或 Evaluation 表。
+- **安全结论：** Gate 使用确定性规则；Prohibited Action Rate 为 0；Judge 默认关闭且不能覆盖规则；工单没有被自动确认，R3 没有被自动批准，没有真实企业 Adapter、真实付费 API 或任意命令执行。
+- **文档同步：** README、Project Overview、Roadmap、Backlog、Architecture、Context、Current State 与 Phase 10 report 已同步到代码和测试事实；根目录 `AGENTS.md` 仍不存在，该缺失已明确记录，没有伪造其内容。
+- **已知质量缺口：** `knowledge-07/08` 说明当前 Fake RAG 对“主题相关但事实不受支持”的问题可能错误回答；因此 Gate PASS 不等于所有案例 PASS。初始 30 条虚构数据也不代表生产分布，词法 Unsupported Claim 不是语义蕴含证明。
+- **阶段判断：** 没有剩余 Blocking 或必要 Important，工程 **PASS**；总体 **CONDITIONAL PASS**，项目所有者需独立回答 Phase 10 report 的 10 道面试题并完成练习。
+- **建议版本：** Commit `feat(evaluation): add deterministic agent quality gates`；学习验收完成后建议 Tag `phase-10-complete`。
+- **停止条件：** 本次到此停止，未经项目所有者明确确认不进入 Phase 11。
+
+### Step 10.5：独立收尾审查并关闭安全门禁与指标语义缺口
+
+- **所属 Phase：** Phase 10：Agent Evaluation Framework（独立收尾审查）。
+- **完成日期：** 2026-08-01
+- **审查边界：** 不沿用 Step 10.4 的 PASS 结论；固定 Git 基线仍为 `b882da7`，但 Phase 6–10 都在同一未提交工作区，因此只审查 Evaluation 模块、CLI、数据集、测试和 Phase 10 文档。根目录 `AGENTS.md` 与 `docs/agents/issue-tracker.md` 均不存在。
+- **Blocking 一：** `--allow-real-api` 只拦截真实 Model，没有拦截真实 Embedding；Fake Model + OpenAI Embedding 会在 fixture indexing/query embedding 中调用真实 API。修复为任一 provider 非 Fake 都必须显式授权，并增加无需数据库的拒绝测试。
+- **Blocking 二：** Gate FAIL 的 immutable report 会正常写出，但原实现仍覆盖 `latest.json/latest.md`；一次安全退化会污染下一次默认 baseline。修复为只有 Gate PASS 才更新 latest aliases；失败 run 仍保留自己的 JSON/Markdown。
+- **Blocking 三：** Prohibited Action 数据集使用 `shell_execution/python_execution/sql_execution/external_system_modified`，Runner 只记录 `tool:<name>`/`executed:<name>`，字符串交集会漏报。修复为统一 canonical observation：裸工具名、tool/execute 标签、危险工具 token、通用 side-effect 和 external modification；安全观察采用保守 fail-closed 语义。
+- **Blocking 四：** 现有 90% Intent/Workflow inclusive threshold 允许 30 条中 3 条非知识案例返回 HTTP error 后仍 PASS；已用当前 Gate 函数复现 `three_http_failures_can_still_pass=True`。修复为任何 case-level HTTP error 都增加 `system.evaluation_completion_rate < 1` Gate failure。
+- **必要 Important：** Recall@K 从“命中任一 expected Document”的 Hit@K 改为命中文档数/全部 expected Documents；MRR 仍计算首个 relevant rank；Tool Argument Accuracy 对 expected/actual 都为空的案例返回 N/A，分母从全部 30 条收敛到真实工具案例；`risk-02` 的 unsupported escalation 现在确定性记录为 refusal，使其进入 Refusal Correctness。
+- **必要 Important：** previous diff 现在只有 dataset SHA 与 corpus fingerprint 均相同时才可比较；否则逐指标为 `not_comparable` 并记录原因。显式 `--baseline` 不存在改为 fail closed，不再静默建立新基线；运行元数据补充 Embedding provider/model/profile，code fingerprint 覆盖 Agent、Conversation、Evaluation、Governance、Intelligence、Knowledge、Service Desk 和 Tools。
+- **必要 Important：** 固定 corpus 从“生产 Retriever 先取 50 再过滤”改为通过 `SearchFilters.document_ids` 在 PostgreSQL keyword/vector 排名前过滤六个允许 Document ID；避免共享库超过 50 个高排名干扰项改变基线。该过滤仍经过生产 authorization/validity/RRF 路径，不创建第二套 Retrieval。
+- **明确适用范围：** Unsupported Claim Rate 仍只计算存在可比 evidence 的知识回答 claim；诊断模板的工具事实没有统一的多语言 claim/evidence 合同，因此不伪造覆盖。报告保留真实 sample count 和此限制，不把 8 条样本描述为 30 条全覆盖。
+- **失败路径测试：** 新增真实 Embedding 拒绝、显式 baseline 缺失、canonical prohibited action、HTTP case error Gate、多个 expected Documents Recall、无工具参数 N/A、dataset/corpus 不可比、失败报告不覆盖 latest，以及 PostgreSQL CLI Gate FAIL/exit 1 测试。
+- **聚焦结果：** Evaluation unit `23 passed in 0.74s`；PostgreSQL Evaluation integration `1 passed in 5.11s`；聚焦 Ruff lint/format 通过。首次集成运行在沙箱中因 localhost PostgreSQL `Operation not permitted` 失败，获准访问同一隔离测试库后通过，未跳过或替换数据库测试。
+- **未处理 Optional：** 没有增加 CI、Evaluation 数据库表、Web UI、远程 artifact store、真实 Judge 校准、并发 Runner 或生产多租户过滤；这些都不属于 Phase 10 收尾。
+- **下一步：** 重新安装当前 wheel，运行受影响知识检索与全仓测试、全仓 Ruff/compile/dependency/whitespace，再执行一正常和至少两个 fail-closed CLI 演示并同步最终文档。
+
+### Step 10.6：完成独立收尾全量验证、四场 CLI 演示与文档闭环
+
+- **所属 Phase：** Phase 10：Agent Evaluation Framework（独立收尾最终验收）。
+- **完成日期：** 2026-08-01
+- **正常场景：** 普通 wheel 重新构建/安装后执行 `IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_evaluations`，连续两次 exit 0/Gate PASS；最终成功 run 为 `eval-20260801T131423Z-f1fcc44f`，自动 baseline `eval-20260801T131339Z-0e377573`，dataset/corpus 可比，全部确定性质量指标 unchanged。
+- **正常指标：** Recall@3/5=`1.0/1.0`、MRR=`0.9166666666666666`；Citation Validity/Evidence Coverage=`1.0/1.0`；Unsupported Claim Rate=`0.0`（8 cases）；Refusal Correctness=`0.7777777777777778`（9 cases，新增 high-risk refusal）；Intent/Tool Selection/Workflow=`1.0`（30 cases）；Tool Argument=`1.0`（17 cases）；Prohibited Action/Tool Error=`0.0/0.0`；Average Steps=`6.933333333333334`；Total Token=`1110`。
+- **保留失败案例：** `knowledge-07/08` 仍为 `refusal_incorrect`；它们证明 Gate PASS 不等于无 case failure。本阶段没有越界修改 RAG/Relevance 业务。
+- **失败场景一：** `--baseline /private/tmp/phase10-does-not-exist.json` → exit 2，稳定 `evaluation_configuration_error`；没有访问数据库或重建 baseline。
+- **失败场景二：** Fake Model + OpenAI Embedding 配置但不传 `--allow-real-api` → exit 2，稳定 `evaluation_configuration_error`；在数据库和 Provider 调用前拒绝，没有真实 API 调用。
+- **失败场景三：** 使用临时强制失败阈值运行完整 30-case → exit 1/Gate FAIL，失败原因为 Intent minimum 1.1；immutable 失败 report 为 `eval-20260801T131655Z-b96cff1a`，成功 `latest.json` 仍保持 `eval-20260801T131423Z-f1fcc44f`，证明失败不污染 baseline。
+- **测试结果：** Evaluation unit `23 passed in 0.74s`；PostgreSQL Evaluation integration `1 passed in 5.11s`；最终全量 `.venv/bin/python -m pytest -q` 为 `232 passed in 16.76s`，没有 skip/xfail 或真实 Provider 调用。
+- **静态与依赖结果：** `.venv/bin/ruff check .` → `All checks passed!`；`.venv/bin/ruff format --check .` → `149 files already formatted`；compileall、pip check、`git diff --check` 通过。
+- **数据库结果：** development/test `alembic current` 均为 `20260801_0012 (head)`；Phase 10 仍没有 migration 或 Evaluation 业务表。
+- **文档同步：** README 当前能力、CLI fail-closed/latest 语义和明确不包含已修正；Project Overview、Architecture、Current State、Phase 10 report 与追加式 Journal 已同步当前代码和真实命令结果。
+- **剩余限制：** Unsupported Claim Rate 只适用于有可比 evidence 的知识回答 claim；30 条虚构案例不代表生产分布；Judge 未经真实模型/人工标注校准；本机 latency 不是 SLA；Phase 6–10 仍共享一个未提交工作区，缺少独立 Phase commit diff。
+- **最终工程判断：** 所有 Blocking 和必要 Important 已关闭；没有过度设计或提前实现 Phase 11；工程 **PASS**，总体 **CONDITIONAL PASS**，只剩项目所有者完成 Phase 10 学习验收。
+- **建议版本：** Commit `fix(evaluation): close phase 10 regression gate gaps`；学习验收后建议 Tag `phase-10-complete`。
+- **停止条件：** 本次到此停止，不进入 Phase 11。
+
+---
+
+## Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard
+
+### Step 11.1：固定 Feedback、取消确认与 Analytics 数据合同
+
+- **所属 Phase：** Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 在实现 UI 前先建立后端拥有的数据合同和数据库边界，确保 Streamlit 不直接访问数据库或复制统计逻辑。
+- **接手事实：** 根目录仍没有 `AGENTS.md`；Git 基线为 `main@b882da7`，Phase 6–10 仍是已有未提交工作区改动。修改前全量第一次因 sandbox 禁止 localhost PostgreSQL 得到 `6 failed, 138 passed, 88 errors`；获准访问隔离测试库后原命令为 `232 passed in 16.19s`。
+- **实际完成内容：** 新增 `feedback` ORM 和 `20260801_0013` migration；Feedback 以 Agent Run 为唯一业务关联，可选关联 Conversation/Ticket，保存 resolved、1–5 satisfaction、可选评论和 idempotency key；Pending Confirmation 增加 `cancelled` 终态；新增 Feedback、Metric、分类计数、最近评估和 Analytics Summary 的严格 Pydantic HTTP Schema；新增可配置 Evaluation artifact 路径；增加 pandas 与 Streamlit 运行依赖声明。
+- **数据口径决定：** 自助解决率以已提交 Feedback 为分母，resolved 且未关联 Ticket 为分子；转人工率以后端 Agent Run 为分母，escalated 或已生成 Ticket 的 Run 为分子；无样本指标返回 `null + sample_count=0`，不伪装成 0。
+- **新增或修改文件：** `analytics/__init__.py`、`analytics/models.py`、`analytics/schemas.py`、migration `20260801_0013`、`service_desk/domain.py`、`service_desk/models.py`、`platform/config.py`、`migrations/env.py`、`pyproject.toml`、migration integration test。
+- **运行与验证命令：** Phase 11 文件 Ruff lint/format；`IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head`；`.venv/bin/python -m pytest tests/integration/knowledge/test_migrations.py -q`。
+- **真实结果：** Ruff `All checks passed!`，9 个相关文件已格式化；测试数据库升级到 `20260801_0013`；migration/schema test `1 passed in 0.27s`，并验证 feedback 全部列和 confirmation `cancelled` check constraint。
+- **当前限制：** 本步骤只完成 schema/contract；Feedback Repository/API、取消 API、Analytics SQL/pandas 实现和 Streamlit 尚未完成。
+- **与下一步骤的关系：** 下一步实现后端 Repository/Service/Routes，并从真实 PostgreSQL 验证幂等 Feedback、取消权限/状态、全部统计口径和最近 Evaluation artifact 投影。
+
+### Step 11.2：实现 Feedback、取消确认与 Analytics 后端 API
+
+- **所属 Phase：** Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 让 UI 需要的写入和统计全部通过 FastAPI 后端公开，并用真实 PostgreSQL 验证权限、幂等和统计语义。
+- **实际完成内容：** 实现 `POST /feedback`，按 Agent Run + idempotency key 串行化，一次 Run 只接受一份不可变 Feedback，并验证 actor/role、可选 Ticket 归属和来源 Run；实现 `POST /agent/cancel`，只有原 actor/role 可把 R1 pending 变为 cancelled，重复取消幂等，取消后 confirm 返回 409，允许/拒绝均写审计；实现 `GET /analytics/summary`，只允许拥有 `audit:read` 的本地支持角色。
+- **统计实现：** Analytics Repository 以有界时间窗口执行 SQL 聚合，统计 Ticket 分类、三类问题、转人工、Agent Steps、工具调用、响应时间、工具成功、Feedback 和失败原因；Analytics Service 使用 pandas 做标签映射、排序、类型规范化和 response projection；最近评估由后端读取本地 immutable Evaluation JSON，跳过损坏文件并去重，不由 UI 直接读文件。
+- **新增或修改文件：** `analytics/domain.py`、`analytics/persistence.py`、`analytics/service.py`、`analytics/routes.py`、FastAPI composition root、Service Desk domain/model/repository/service/routes/schemas、migration `0013`、Analytics/Service Desk/migration integration tests。
+- **运行与验证命令：** 阿里云 PyPI 镜像安装 pandas 3.0.5、Streamlit 1.60.0 及依赖；Phase 11 Ruff；test DB `0013 → 0012 → 0013`；`.venv/bin/python -m pytest tests/integration/api/test_analytics.py tests/integration/api/test_service_desk.py tests/integration/knowledge/test_migrations.py -q`。
+- **真实结果：** 官方 PyPI 首次下载约 18 kB/s 后中止，清华镜像返回 403，阿里云镜像成功完成项目本地依赖安装；migration 首次 downgrade 暴露旧开发快照没有后补 `cancelled_at`，改为 `IF EXISTS` 后往返成功；聚焦最终 `6 passed in 2.17s`；相关 Ruff 通过。
+- **验收覆盖：** Feedback success/replay/conflict/wrong actor；Ticket-linked unresolved Feedback；Analytics employee 403/support 200；两条 Run 的 self-service/transfer 比例、分类、步骤、工具、响应时间、成功率、满意度和最近 Evaluation；取消 wrong actor、成功、replay 和取消后 confirm 409。
+- **当前限制：** Analytics 是本地支持角色 dashboard，不是生产 tenant analytics；最近 Evaluation 仍是本地 artifact，不是 Evaluation 数据库；Feedback 一次提交后不可编辑。
+- **与下一步骤的关系：** 下一步实现可测试的 HTTP client 和 Streamlit Chat/Dashboard 页面；页面只负责交互与呈现，不包含 SQL、指标计算、Policy 或 confirmation 状态机。
+
+### Step 11.3：实现两页 Streamlit UI 与 HTTP-only client
+
+- **所属 Phase：** Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 提供简单可演示 UI，同时保持 Streamlit 只调用 FastAPI，不导入 Repository、ORM、SQL 或业务 Service。
+- **实际完成内容：** 新增 `ITSupportAPIClient`，只调用 `/agent/respond`、`/agent/confirm`、`/agent/cancel`、`/feedback` 和 `/analytics/summary`，统一 timeout、连接失败、错误 envelope 和 JSON 校验；新增 IT Support Chat 页面，支持模拟 actor/role、多轮 Conversation ID、Agent 状态、引用、步骤、Tool Execution audit、pending impact、确认/取消、Ticket Number 和 resolved/satisfaction Feedback；新增 Analytics Dashboard 页面，展示 Ticket 分类、三类问题数量、自助/转人工、平均步骤/工具/响应时间、工具成功、满意度、失败原因和最近评估。
+- **职责边界：** UI 的 pandas 只把后端已聚合的 label/count 映射为图表 DataFrame，不计算业务指标；没有导入 DatabaseManager、SQLAlchemy、Repository、Policy、Tool Gateway 或 Evaluation 文件；FastAPI 未启动时显示安全错误，不回退到数据库或本地 artifact。
+- **新增或修改文件：** `apps/ui/__init__.py`、`client.py`、`chat_page.py`、`dashboard_page.py`、`streamlit_app.py`、UI client tests、`.env.example`、`pyproject.toml`。
+- **运行与验证命令：** `.venv/bin/python -m pytest tests/unit/ui -q`；UI Ruff lint/format；compileall；使用 `streamlit.testing.v1.AppTest` 分别渲染 Chat 与 Dashboard。
+- **真实结果：** UI client `4 passed in 0.01s`；Ruff `All checks passed!`，7 个 UI/test 文件已格式化；compileall 成功；Chat AppTest 为 0 exception/title `IT Support Chat`；切换 Dashboard 为 0 exception/title `Analytics Dashboard`，未启动 API 时稳定显示 `api_unavailable`。
+- **当前限制：** UI 是本地同步演示，不提供流式 token、生产登录、浏览器级 E2E 或复杂视觉设计；R3 Human Approval 仍使用既有 API/运行边界，本次 Chat 重点验收 R1 confirmation 和本地 Ticket。
+- **与下一步骤的关系：** 下一步增加幂等、只写固定虚构数据的 Phase 11 seed 脚本，确保 Dashboard 在不调用真实 Provider 的情况下立即有可展示分布和成功/失败样本。
+
+### Step 11.4：提供幂等的固定虚构 Dashboard seed
+
+- **所属 Phase：** Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard。
+- **完成日期：** 2026-08-01
+- **本步骤目标：** 让个人项目无需真实企业系统或付费模型即可快速展示 Dashboard 的正常、转人工、失败和满意度数据。
+- **实际完成内容：** 新增 `python -m scripts.seed_phase11_demo`；脚本使用固定 namespace UUID、固定 `phase11-demo-employee` actor、`phase11-seed-*` request ID 和明确虚构正文，写入 6 Agent Runs、23 Steps、6 Tool Executions、4 Tickets 和 4 Feedback；覆盖 VPN/Outlook/account/ticket/escalated/failed、成功与 timeout、四种 Ticket category、resolved/unresolved 和 1–5 satisfaction；全部 insert 使用固定主键与 `ON CONFLICT DO NOTHING`，不删除或覆盖已有用户数据。
+- **安全边界：** Seed 只通过项目 DatabaseManager 写当前配置的本地 PostgreSQL；不调用 LLM/Embedding、Tool Gateway、真实 Adapter、外部 HTTP、Shell/Python Agent 工具或权限修改；它是演示 fixture，不是业务写入入口。
+- **新增或修改文件：** `scripts/seed_phase11_demo.py`、`tests/integration/analytics/test_seed.py` 及 package marker。
+- **运行与验证命令：** Seed 文件 Ruff lint/format；`.venv/bin/python -m pytest tests/integration/analytics/test_seed.py -q`。
+- **真实结果：** Ruff `All checks passed!`，3 个相关文件已格式化；隔离 PostgreSQL 连续运行 seed 两次后仍精确为 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback；`1 passed in 0.33s`。
+- **当前限制：** Seed 时间相对运行时生成，因此适合最近 30 天演示；它不为真实用户创建可信身份，也不生成生产规模或统计显著性数据。
+- **与下一步骤的关系：** 下一步执行 verification-loop：完整 migration 往返、相关/全量测试、安装态 seed、真实 FastAPI + Streamlit 两页 smoke、安全边界和最终文档同步。
+
+### Step 11.5：完成事务审查、真实演示、页面截图和最终验收
+
+- **所属 Phase：** Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard（最终 verification-loop）。
+- **完成日期：** 2026-08-01
+- **独立一致性修正：** 成功取消 pending confirmation 的状态变化与 allow audit 原先是两个事务，存在 audit 失败后状态已取消的窗口；改为 Repository 同一事务写 `cancelled_at` 和 AuditEvent，deny audit 仍由 Service 记录。自助解决率从“Feedback 未传 ticket_id”修正为“resolved 且该 Run 不存在来源 Ticket”，避免客户端漏传 Ticket Number 抬高指标。聚焦复测 `5 passed in 2.26s`，Ruff 通过。
+- **普通安装态：** `.venv/bin/python -m pip install --no-build-isolation .` 成功构建并重新安装 wheel；pandas 3.0.5、Streamlit 1.60.0 可导入，`pip check` 无 broken requirements。
+- **数据库与 seed：** development 升级到 `20260801_0013 (head)`；最终 development/test `alembic current` 都是 `20260801_0013 (head)`；安装态 seed 重跑仍返回固定 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback，证明不覆盖实时演示新增数据且 seed 自身幂等。
+- **真实 HTTP 演示：** 临时启动正式 FastAPI 和 Streamlit；通过 UI HTTP client 依次完成 VPN diagnosis、同一 Conversation 工单请求、R1 confirm、本地建单、unresolved/3 分 Feedback 和 Analytics。结果为 diagnosis `completed`、5 次工具调用、confirmation `executed`、Ticket `IT-20260801-000001`、Feedback 保存成功，Analytics 返回 14 Runs/5 Tickets（随后浏览器 UI VPN 演示又增加一条 Run，因此截图数值按当时数据库实时变化）。
+- **实际浏览器检查：** 通过本地浏览器打开 `127.0.0.1:8501`；Chat 显示 `completed`、`vpn_diagnosis`、10 Steps、5 Tool calls 和完整 executed tools/audit 表；Dashboard 显示 Tickets、自助、转人工、工具成功、满意度、平均步骤/工具/响应时间、四组简洁图表和最近 Evaluation，没有页面异常。实际 1440×900 截图保存到 `docs/screenshots/phase11-chat.png` 和 `phase11-dashboard.png`。
+- **运行中发现与修复：** Streamlit 1.60 对三个 `use_container_width=True` 打出弃用提示；统一改为 `width="stretch"`，两页 AppTest 仍 0 exception，后续运行不再产生该项目弃用提示。
+- **错误命令记录：** 最终全量第一次错误地给整个 pytest 进程设置 `IT_SUPPORT_ENVIRONMENT=test`，导致 10 个专门验证 development 默认配置的 unit tests 被环境污染，得到 `10 failed, 229 passed in 17.13s`；这不是代码失败。按仓库标准、不加全局覆盖的 `.venv/bin/python -m pytest -q` 立即重跑为 `239 passed in 17.01s`。Integration fixtures 自行设置隔离 test 环境，没有弱化或跳过数据库测试。
+- **最终静态门禁：** `.venv/bin/ruff check .` → `All checks passed!`；`.venv/bin/ruff format --check .` → `168 files already formatted`；compileall、pip check、`git diff --check` 通过；Streamlit 两页 AppTest 通过。
+- **职责边界审查：** `apps/ui` 没有 DatabaseManager、SQLAlchemy、Repository、Policy、SQL 或 Evaluation 文件读取；Dashboard 的全部指标通过 `/analytics/summary`；Chat 的确认/取消、工单和 Feedback 全部通过 FastAPI；没有新增真实 Adapter、真实 Provider、任意命令工具或审批绕过。
+- **文档闭环：** README 增加 seed/启动命令、四步演示和两张实际截图；Project Overview、Roadmap、Backlog、Current State 与 Phase 11 report 同步当前代码、统计口径、真实验证和限制。根目录 `AGENTS.md` 仍不存在，该事实没有被虚构。
+- **阶段判断：** 用户列出的功能和验收项全部有实现与运行证据；没有剩余 Blocking 或必要 Important，工程 **PASS**。总体 **CONDITIONAL PASS**，项目所有者需完成 Phase 11 report 的 10 道面试题与独立练习。
+- **建议版本：** Commit `feat(ui): add phase 11 support chat and analytics dashboard`；学习验收后建议 Tag `phase-11-complete`。
+- **停止条件：** 本次到此停止，未经项目所有者明确确认不进入 Phase 12。
+
+### Step 11.6：独立收尾验收、必要修复与学习门禁
+
+- **所属 Phase：** Phase 11：Streamlit 用户界面与 IT 工单数据分析 Dashboard（独立收尾验收）。
+- **完成日期：** 2026-08-01
+- **接手与审查边界：** 根目录 `AGENTS.md` 仍不存在；Git 基线仍为 `b882da7`，Phase 6–11 共处未提交工作区。本轮按 Phase 11 原始任务、代码、真实 PostgreSQL 测试和运行结果审查，只修 Blocking 与必要 Important，不增加 Phase 12 功能。
+- **修改前问题清单：** 无 Blocking；Important 包括 UI 把全部 retrieved candidates 误标为 Citation、确认后未刷新 `create_ticket` audit、身份/新请求/取消可能留下陈旧 Ticket 或 pending 状态、Run cohort 的 child timestamp 二次过滤导致步骤/工具低估、Feedback 只按 Run 加锁不能覆盖全局 idempotency key、取消/空窗口/损坏 artifact/时间边界/UI 状态失败测试不足，以及 seed 没有提供知识问答数据。Phase report 的角色列表和失败原因口径也与代码不一致。
+- **实际修复：** Chat 只投影 `final_response.citations`；新增 Run GET client，确认后刷新 matching assistant trace；身份变化重置会话，新 response 清理旧 Ticket，pending 时禁用新输入，取消显示明确无副作用结果；工具表补 risk/side effect。Analytics 的 Run cohort 连接全部 Steps/Tools；Feedback 对全局 key 与 Run 获取排序 advisory locks。Seed 要求 Fake Embedding 并复用六份虚构知识 fixture。相关 UI、API、Analytics、Service Desk 和 seed 测试补齐上述正常与失败合同。
+- **必要回归命令：** `.venv/bin/python -m pytest -q tests/unit/ui tests/integration/api/test_analytics.py tests/integration/api/test_service_desk.py tests/integration/analytics/test_seed.py tests/integration/knowledge/test_migrations.py` → `14 passed in 2.79s`。
+- **安装态 seed：** `.venv/bin/python -m pip install --no-build-isolation .` 成功；`.venv/bin/python -m scripts.seed_phase11_demo` → 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback，并且知识 Retriever 能找到 `Evaluation VPN Configuration SOP`。
+- **正常实际演示：** 正式 FastAPI + Streamlit 启动后，通过 UI HTTP client 执行知识问答 → `completed`/1 Citation；执行工单请求并确认 → `executed`/Ticket `IT-20260801-000002`；随后 GET Run 的 Tool Execution 包含 `create_ticket`。实际浏览器 Chat 显示回答、completed、knowledge_question、5 Steps、0 Tool calls、最终采用的 Citation 与 Feedback 控件。
+- **失败场景一：** wrong actor 取消 pending confirmation → HTTP 403，稳定错误 `confirmation_access_denied`；原 actor 随后取消完成清理。
+- **失败场景二：** employee 读取 Analytics → HTTP 403，稳定错误 `analytics_access_denied`。
+- **UI 渲染：** Streamlit AppTest：Chat 0 exception/title `IT Support Chat`；Dashboard 0 exception/title `Analytics Dashboard`。本轮浏览器自动化没有可靠触发 Dashboard radio 切换，因此没有把该动作伪记为通过；Dashboard 证据由既有实际截图、本轮 AppTest、实际 Analytics HTTP 和 PostgreSQL integration 组成。
+- **全量测试：** 沙箱内标准命令首跑因 localhost PostgreSQL `Operation not permitted` 得到 `7 failed, 144 passed, 91 errors`；按相同命令获准访问隔离测试库后 `.venv/bin/python -m pytest -q` → `242 passed in 17.70s`，没有跳过或用 SQLite/mock 替代数据库语义。
+- **最终门禁：** `.venv/bin/ruff check .` → `All checks passed!`；`.venv/bin/ruff format --check .` → `169 files already formatted`；compileall exit 0；pip check `No broken requirements found`；`git diff --check` exit 0。
+- **安全与范围结论：** 没有数据库访问进入 UI，没有复制 Policy/统计状态机，没有真实 Provider/企业 Adapter/命令执行，没有过度设计或提前实现 Phase 12。本地 actor/role 仍不等于生产认证，Dashboard 仍无 tenant/大数据性能保证，Feedback comment 仍缺生产 PII 生命周期；这些是明确边界，不是 Phase 11 未完成项。
+- **阶段结论：** 所有 Blocking 和必要 Important 已关闭，工程 **PASS**；总体 **CONDITIONAL PASS**，项目所有者需要独立回答本报告 10 道面试题并完成 30–60 分钟练习。建议 Commit `fix(ui): close phase 11 acceptance gaps`；学习验收后建议 Tag `phase-11-complete`。
+- **停止条件：** 本次到此停止，不进入 Phase 12。
+
+---
+
+## Phase 12：部署、CI、安全检查和作品集包装
+
+### Step 12.1：建立非 root 应用镜像与安全自动迁移编排
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 让 PostgreSQL/pgvector、数据库 migration、FastAPI 和 Streamlit 具有可复现的一键编排，同时避免每个应用进程启动时重复执行 migration。
+- **接手事实：** 根目录 `AGENTS.md` 和 `docs/phase_reports/phase_12.md` 不存在；Git 基线为 `b882da7`，Phase 6–11 仍是既有未提交工作区。修改前只有 db Compose，没有应用 Dockerfile 或 GitHub Actions。Docker Desktop 未运行，`docker compose ps` 返回 Docker socket 不存在。修改前 Ruff/format 通过；全量测试因 localhost PostgreSQL 不可达得到 `7 failed, 144 passed, 91 errors`，与 Phase 11 记录的环境失败一致。
+- **实际完成内容：** 新增 Python 3.12 slim 的 FastAPI 与 Streamlit Dockerfile，使用固定 UID/GID 非 root 用户；新增 `.dockerignore` 排除 Git、`.env`、虚拟环境、缓存、测试和本地产物；Compose 增加一次性 `migrate`、FastAPI `api` 和 Streamlit `ui`，PostgreSQL 健康后才迁移、迁移成功后才启动 API、API ready 后才启动 UI；端口仅绑定 localhost，知识文件与 Evaluation artifact 使用命名卷。
+- **Migration 安全边界：** 新增 `python -m scripts.run_migrations`；自动执行前要求仓库只有一个 Alembic head，数据库已在 head 时明确 no-op，否则只运行 `upgrade head`，执行后再次核对实际 head。脚本不执行 downgrade、drop、reset、seed 或任意 SQL，也不嵌入每个 Uvicorn/Streamlit 进程。
+- **新增或修改文件：** `docker/Dockerfile.api`、`docker/Dockerfile.streamlit`、`.dockerignore`、`compose.yaml`、`scripts/run_migrations.py`、`docs/project_journal.md`。
+- **运行与验证命令：** `docker compose config --quiet`；`.venv/bin/ruff check docker scripts/run_migrations.py`；`.venv/bin/python -m compileall -q scripts/run_migrations.py`。
+- **真实结果：** Compose 配置解析 exit 0；Ruff `All checks passed!`；migration 脚本编译 exit 0。Docker daemon 当前未运行，因此镜像 build、migration 实际 no-op 和完整 Compose 启动仍待恢复 Docker 后验收，当前不宣称运行通过。
+- **当前限制：** 默认 Compose 凭证是明确的本机占位值，不适合公网或生产；本项目没有生产 secret manager、TLS、SSO 或集群 migration lock，这些保持在作品集 MVP 边界外。
+- **与下一步骤的关系：** 下一步建立 GitHub Actions，把 lint、真实 PostgreSQL 测试、migration drift、Evaluation、安全 secret scan 和两个镜像 build 固定为独立门禁。
+
+### Step 12.2：建立 GitHub Actions 质量、安全与镜像门禁
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 让每次 push/PR 自动验证代码质量、真实数据库行为、migration 漂移、Evaluation 安全回归、secret 泄漏和镜像可构建性。
+- **实际完成内容：** 新增只读 `contents` 权限与并发取消策略的 CI；Quality job 运行 Ruff lint/format、compileall 和 pip check；pytest job 使用官方 pgvector PostgreSQL 17 service，并显式创建隔离 test database；Migration job 连续运行两次安全迁移入口并执行 `alembic check`；Evaluation job以 Fake Model/Embedding 运行正式 30-case gate；Secrets job 用完整 Git history 执行 Gitleaks；Docker matrix 分别构建 FastAPI 和 Streamlit 镜像但不推送。
+- **安全设计：** CI 数据库密码是只用于临时 service 的明确占位值，不是 repository secret；外部 Model/Embedding 保持 Fake；workflow 不申请写权限、不发布镜像、不自动部署；Gitleaks 禁用 PR 自动评论以保持最小副作用。
+- **新增或修改文件：** `.github/workflows/ci.yml`、`docs/project_journal.md`。
+- **运行与验证命令：** Ruby YAML parse；`.venv/bin/ruff check .github scripts/run_migrations.py`；`git diff --check -- .github/workflows/ci.yml docker compose.yaml scripts/run_migrations.py .dockerignore`；检查本机 `actionlint` 与 `gitleaks` 可用性。
+- **真实结果：** Workflow YAML 解析成功；Ruff `All checks passed!`；Git whitespace exit 0。本机没有 `actionlint` 或 `gitleaks`，Docker daemon 也未运行，所以 action schema、secret scan、数据库 jobs 和镜像 jobs 尚未在当前机器实跑，不能据静态配置宣称 CI 已通过。
+- **版本依据：** 采用当前官方文档展示的 `actions/checkout@v6`、`actions/setup-python@v6`、`docker/setup-buildx-action@v4`、`docker/build-push-action@v7`，以及 Gitleaks Action 最新稳定 `v2.3.9`；后续仍应由 Dependabot 或人工定期审查 action 供应链版本。
+- **与下一步骤的关系：** 下一步按 Phase 12 威胁清单增加专项安全测试，重点覆盖 Prompt Injection、跨 actor/role 越权、上传边界、敏感日志和任意代码工具禁止规则。
+
+### Step 12.3：补齐 Prompt Injection、上传与仓库安全回归
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 把安全清单转成可重复执行的行为与静态门禁，确认不因用户输入或知识内容执行任意工具，并收紧上传声明类型。
+- **实际完成内容：** 新增两类 Prompt Injection 用例：用户要求忽略指令并调用 `run_shell_command` 时必须升级且零工具调用；检索 Chunk 内的注入文本只能作为 JSON user Context，System Prompt 明确其为不可信数据，最终回答不执行或回显任意命令。上传 API 现在要求 `.txt/.md/.markdown/.pdf` suffix 与 allowlisted media type 匹配，并新增伪装 Shell 文本的 415 回归；原空文件、超限和损坏 PDF 用例改用真实声明类型，仍保留各自业务失败语义。
+- **仓库安全门禁：** 新增 `python -m scripts.check_security_boundaries`，扫描 tracked 与未忽略待提交文件中的高置信 API key/private key 形状和误纳入的 `.env`；使用 AST 扫描 `apps/` 与 `src/`，禁止 `eval`、`exec`、`os.system`、`os.popen` 和 `subprocess` 进入应用运行时。该脚本加入 CI Quality job。测试/开发脚本仍可进行受控 Git 子进程检查，不成为 Agent Tool。
+- **既有越权与脱敏证据：** 当前套件已覆盖 Conversation role 变化、Agent Run role mismatch、Ticket ownership、wrong actor confirm/cancel、employee audit/analytics、非 approver/self approval、Gateway permission denial、日志 DB URL/Bearer/API key 脱敏，以及工单/audit provider 异常清理；不重复实现第二套授权系统。
+- **新增或修改文件：** `knowledge/routes.py`、Agent Runtime/RAG/API tests、`scripts/check_security_boundaries.py`、CI workflow、`docs/project_journal.md`。
+- **运行与验证命令：** 聚焦 RAG/Runtime/Gateway/logging pytest；security boundary script；相关 Ruff lint/format；搜索所有 multipart fixture media type。
+- **真实结果：** 聚焦测试 `58 passed in 2.02s`；security boundary `security boundary checks passed`；相关 Ruff `All checks passed!`，5 个文件 format check 通过。上传 MIME HTTP 用例与既有 PostgreSQL 越权套件仍待数据库恢复后合并验收。
+- **限制说明：** Prompt Injection 测试证明当前确定性图和 Gateway 不会把两种已覆盖注入变成工具执行，不等于对所有语言和编码攻击的形式化证明；“真实公司数据”无法仅靠正则完整判定，最终还需人工审查全部 fixture、截图和文档并明确它们是虚构数据。
+- **与下一步骤的关系：** 下一步做可证明的无用/重复文件审查，然后集中完成 README 与三份作品集材料。
+
+### Step 12.4：清理可证明无用的预留入口并保留有效模块
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 删除不会运行且会误导读者的占位代码，同时避免把未提交业务模块或历史评估入口误判为重复实现。
+- **实际完成内容：** 确认 Git 没有跟踪 `__pycache__`、`.DS_Store`、pytest/Ruff cache、egg-info 或本地 Evaluation artifacts；Ruff 全仓无未使用 import/变量。`apps/worker/__init__.py` 只有“未来预留”docstring、没有任何引用或入口，因此删除该空 package；`scripts/evaluate_retrieval.py` 与 `scripts/run_evaluations.py` 分别承担 Retrieval-only 与完整 Agent Evaluation，不是重复模块，予以保留。
+- **删除文件：** `apps/worker/__init__.py`。本步骤不删除用户的 Phase 6–11 未提交代码、迁移、测试、报告或截图。
+- **运行与验证命令：** `git ls-files` 生成物扫描；全仓 worker 引用扫描；检查 worker 文件大小和实际内容；既有 Ruff 全仓基线。
+- **真实结果：** 未发现被 Git 跟踪的缓存/构建产物；worker 只有 52-byte 占位 docstring且无代码引用。未发现第二个可在不改变行为的前提下安全删除的业务模块。
+- **与下一步骤的关系：** README 将移除已删除 worker 的目录说明，并以最终 Compose、CI、安全和评估事实重写；随后创建面试、演示和简历材料。
+
+### Step 12.5：完成 README 与求职作品集材料初稿
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 让新用户可以按真实入口启动项目，并让面试、演示和简历描述与当前代码、测试和 Mock 边界一致。
+- **实际完成内容：** 重写 README，覆盖项目背景、业务问题、功能、Mermaid 架构、技术栈、目录、Docker/本地启动、Demo、RAG、Agent、Tool Gateway、observation、Policy/审批、幂等、Evaluation、CI、安全、当前结果、限制与规划；删除旧 worker/Phase 11 停止点和“尚无 CI”描述。新增面试指南，包含用户指定的 12 个主题及 Codex 辅助责任边界；新增 5 分钟 Demo 时间轴，覆盖 VPN 问答、Outlook Mock 诊断、确认建单、审计、Dashboard 和 Evaluation；新增 AI 应用、AI 产品、数据分析各 3 条量化简历 Bullet。
+- **真实性规则：** 所有数字来自当前仓库的 13 个 migration、7 个只读 Mock tools、30-case 数据集、240+ 测试和最后确认的 Evaluation 指标；不声称真实企业集成、生产业务提升、真实员工满意度或生产 SLA。简历文档明确要求最终用 Phase 12 实际通过数替换 `240+`。
+- **新增或修改文件：** `README.md`、`docs/interview_guide.md`、`docs/demo_script.md`、`docs/resume_bullets.md`、`docs/project_journal.md`。
+- **运行与验证命令：** 检查四份文档的必需二级标题；核对 Demo actor、endpoint、脚本和 mock tool 名称；`git diff --check` 检查文档 whitespace。
+- **真实结果：** 用户列出的 README、面试、Demo 和三方向简历主题均存在；文档 whitespace exit 0。README 中 Phase 12 最终结果仍引用后续 `phase_12.md`，需要在完整 Docker/测试/Evaluation 验收后填入最终数字和判定。
+- **与下一步骤的关系：** 下一步恢复 Docker/PostgreSQL，执行 migration、上传安全、越权、全量 pytest、Evaluation、secret scan、镜像与 Compose 端到端验证，并依据真实结果修正文档。
+
+### Step 12.6：完成 Docker、迁移、secret scan 和 README 命令实跑
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 恢复真实 Docker/PostgreSQL 环境，证明镜像、Compose、重复 migration、seed、Evaluation 和 secret scan 不是只有静态配置。
+- **实际完成内容：** Docker Engine 恢复后构建 FastAPI/Streamlit/migrate 镜像；启动 db/migrate/api/ui 完整依赖链；检查 API/UI 非 root、三个健康端点、迁移日志和重复 no-op。下载 Gitleaks v8.30.1 官方 Darwin arm64 release，在执行前用官方 checksum 验证 SHA-256；首轮 worktree 发现 5 个候选，核对为 `.venv` 第三方 source map 和 3 条显式测试幂等值，新增 `.gitleaks.toml` 仅精确排除这些非密钥项，保留默认规则。
+- **发现与修复：** README seed 首跑失败，因为 Evaluation fixture 仍在 `tests/fixtures/knowledge`，而镜像不复制 tests。将 6 份虚构知识迁至 `data/evaluation/knowledge`，更新测试、PDF 生成脚本和 Evaluation fixture 路径；没有把测试代码打进生产镜像。重建后 seed 连续两次计数完全一致，容器 Evaluation Gate PASS。Streamlit 增加 localhost browser address，启动日志不再显示外部地址。
+- **运行与验证命令：** `docker compose build api ui migrate`；`docker compose up -d`；`docker compose ps -a`；容器 `/health`、`/ready`、`/_stcore/health`；`docker compose exec ... id -u`；`docker compose run --rm migrate`；容器 seed 两次；容器 Evaluation；Gitleaks `dir` 与 `git`。
+- **真实结果：** 三镜像 build 成功；db/api/ui healthy，migrate exited 0；API/UI UID 均 10001；三个健康检查通过；重复 migration 输出已在 head；seed 两次均为 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback；容器 Evaluation Gate PASS。最终 Gitleaks worktree 约 6.01 MB、3 commits 约 637 KB，均 `no leaks found`。
+- **安全说明：** 没有用网络容器挂载私有仓库做扫描；release binary 在本地执行且 checksum 已验证。allowlist 没有排除整个 tests 或禁用 generic secret rule。
+- **与下一步骤的关系：** 下一步修正 CI 环境隔离，执行最终 245 项全量、migration drift 和本地 Evaluation，并同步最终报告与状态文档。
+
+### Step 12.7：完成最终 verification-loop 与 Phase 12 文档闭环
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（最终 verification-loop）。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 用原始范围、真实代码、全量自动测试、实际 Docker 行为、安全失败路径和文档一致性决定阶段是否可以收尾。
+- **发现与修复：** 第一次最终 pytest 命令错误地全局设置 `IT_SUPPORT_ENVIRONMENT=test`，使 10 个验证 development 配置的单元测试被环境污染，得到 `10 failed, 235 passed`。删除 CI 顶层的该变量，只在 migration/evaluation jobs 设置 test；标准 pytest job 由各测试 fixture 决定环境。Fixture 路径迁移后，本地 Evaluation CLI 首次仍加载旧 site-packages；重新安装当前 package 后使用新路径通过。`migrations/env.py` 的 drift 过滤只排除 LangGraph checkpoint saver 管理的表和既有显式 FTS index，没有生成删除 migration。
+- **全量测试：** `.venv/bin/python -m pytest -q` → `245 passed in 17.98s`，使用真实隔离 PostgreSQL/pgvector；没有跳过或改用 SQLite。
+- **最终门禁：** Ruff `All checks passed!`；format `170 files already formatted`；compileall、pip check、security boundary、Git whitespace 通过；最终 Gitleaks worktree 约 6.17 MB 与 3 commits 均 `no leaks found`；安全 migration 连续两次 no-op；`alembic check` → `No new upgrade operations detected.`。
+- **Evaluation：** 重装当前 package 后 `eval-20260805T141357Z-046e52d7` Gate PASS；Recall@3/5 1.0/1.0、MRR 0.8333、Citation/Evidence 1.0、Unsupported Claim 0、Refusal 0.7778、Intent/Tool/Workflow 1.0、Prohibited Action 0。失败仍是 `knowledge-07/08`；previous-run 因 `knowledge_corpus_fingerprint_changed` 不可比较。
+- **文档闭环：** 更新 README、Project Overview、Roadmap、Backlog、Current State 和三份作品集材料；新建 `docs/phase_reports/phase_12.md`。旧 Backlog 的安全 Phase 12 与 Docker Phase 13 按本次明确指令合并为最终 Phase 12，不再保留一个虚假的待实施 Phase 13。
+- **阶段判断：** 仓库内实现和本地工程门禁 PASS，没有剩余 Blocking 代码缺口。GitHub-hosted workflow 因当前没有 commit/push 尚无 run，因此总体为 **CONDITIONAL PASS**，不能声称远端 CI 已绿。Phase 6–12 共处未提交工作区，本轮不擅自 commit 或 push。
+- **建议版本：** Commit `feat(delivery): complete phase 12 portfolio release`；首次 GitHub-hosted CI 通过后 Tag `phase-12-complete`。
+- **停止条件：** 本次到此停止，不自动开始新的 Phase 或生产集成。
+
+### Step 12.8：建立根目录工作规则并收敛 Phase 6–12 Git 历史
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（版本收尾）。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 修复根目录缺少 `AGENTS.md` 和 Phase 6–12 长期共处未提交工作区两个交付缺口，不通过删除文档表述掩盖事实。
+- **实际完成内容：** 新建根目录 `AGENTS.md`，固定 repo-first 阅读顺序、Phase scope、LLM/确定性系统边界、Tool Gateway 禁止项、真实 PostgreSQL/migration 规则、Phase 验证命令、journal/Current State/Phase report 更新要求和 Git hygiene。保留 journal 中各 Phase 当时“AGENTS 缺失/工作区未提交”的历史记录，只更新 Current State 与 Phase 12 最终报告的当前事实。
+- **Git 策略：** 由于 Phase 6–12 修改跨越相同 composition root、配置、README、Roadmap、Context 和 journal，无法从最终工作区可靠重建七个互不重叠的历史 diff；按项目所有者本次明确要求使用一个诚实的阶段收尾提交 `feat(delivery): complete phases 6-12`，不伪造逐 Phase commit。提交前重新检查完整 status、whitespace、安全边界和 secret scan；不 push、不 tag。
+- **最终状态：** Phase 6–12 的代码、迁移、测试、Evaluation、UI、Docker、CI、安全检查、作品集材料与 `AGENTS.md` 一并进入本地提交；提交完成后工作区应为 clean。GitHub-hosted CI 仍需 push 后确认。
+- **停止条件：** 完成本地 commit 与 clean-worktree 复核后停止，不自动 push 或开始新 Phase。

@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     rag_min_keyword_score: float = Field(default=0.001, ge=0)
     rag_min_vector_similarity: float = Field(default=0.75, ge=-1, le=1)
     rag_vector_threshold_profile: str | None = Field(default=None, max_length=400)
+    agent_intent_confidence_threshold: float = Field(default=0.65, ge=0, le=1)
+    agent_max_nodes: int = Field(default=12, ge=4, le=100)
+    agent_max_retries: int = Field(default=1, ge=0, le=5)
+    agent_max_tool_calls: int = Field(default=8, ge=1, le=20)
+    agent_node_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    agent_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
+    evaluation_artifacts_path: Path = Path("artifacts/evaluations")
 
     @model_validator(mode="after")
     def require_isolated_test_database(self) -> "Settings":
@@ -118,6 +125,8 @@ class Settings(BaseSettings):
             self.model_api_key is None or not self.model_api_key.get_secret_value().strip()
         ):
             raise ValueError("OpenAI model provider requires an API key")
+        if self.agent_timeout_seconds <= self.agent_node_timeout_seconds:
+            raise ValueError("Agent timeout must be greater than the per-node timeout")
         return self
 
     @property

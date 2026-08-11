@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  IT_SUPPORT_DATABASE_URL: postgresql+psycopg://it_support:ci-only-password@localhost:5432/enterprise_it_support
+  IT_SUPPORT_TEST_DATABASE_URL: postgresql+psycopg://it_support:ci-only-password@localhost:5432/enterprise_it_support_test
+  IT_SUPPORT_EMBEDDING_PROVIDER: fake
+  IT_SUPPORT_EMBEDDING_MODEL: fake-embedding-v1
+  IT_SUPPORT_EMBEDDING_DIMENSION: "8"
+  IT_SUPPORT_EMBEDDING_VERSION: v1
+  IT_SUPPORT_MODEL_PROVIDER: fake
+  IT_SUPPORT_MODEL_NAME: fake-chat-v1
+
+jobs:
+  quality:
+    name: Ruff and package checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install project
+        run: python -m pip install --no-build-isolation '.[dev]'
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format
+        run: ruff format --check .
+      - name: Compile Python
+        run: python -m compileall -q apps src scripts migrations
+      - name: Check dependencies
+        run: python -m pip check
+      - name: Check repository security boundaries
+        run: python -m scripts.check_security_boundaries
+
+  tests:
+    name: pytest with PostgreSQL and pgvector
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_USER: it_support
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: enterprise_it_support
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U it_support -d enterprise_it_support"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Create isolated test database
+        run: docker exec ${{ job.services.postgres.id }} createdb -U it_support enterprise_it_support_test
+      - name: Install project
+        run: python -m pip install --no-build-isolation '.[dev]'
+      - name: Run test suite
+        run: python -m pytest -q
+
+  migrations:
+    name: Migration safety and drift
+    runs-on: ubuntu-latest
+    env:
+      IT_SUPPORT_ENVIRONMENT: test
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_USER: it_support
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: enterprise_it_support
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U it_support -d enterprise_it_support"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Create isolated test database
+        run: docker exec ${{ job.services.postgres.id }} createdb -U it_support enterprise_it_support_test
+      - name: Install project
+        run: python -m pip install --no-build-isolation '.[dev]'
+      - name: Upgrade to the single migration head
+        run: python -m scripts.run_migrations
+      - name: Prove repeated automatic migration is a no-op
+        run: python -m scripts.run_migrations
+      - name: Check ORM and migration drift
+        run: alembic check
+
+  evaluation:
+    name: Evaluation regression
+    runs-on: ubuntu-latest
+    env:
+      IT_SUPPORT_ENVIRONMENT: test
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_USER: it_support
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: enterprise_it_support
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U it_support -d enterprise_it_support"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Create isolated test database
+        run: docker exec ${{ job.services.postgres.id }} createdb -U it_support enterprise_it_support_test
+      - name: Install project
+        run: python -m pip install --no-build-isolation '.[dev]'
+      - name: Run deterministic 30-case evaluation gate
+        run: python -m scripts.run_evaluations
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  docker:
+    name: Docker build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: fastapi
+            dockerfile: docker/Dockerfile.api
+          - name: streamlit
+            dockerfile: docker/Dockerfile.streamlit
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: enterprise-it-support-${{ matrix.name }}:ci

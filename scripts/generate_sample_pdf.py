@@ -9,7 +9,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
-OUTPUT_PATH = Path("tests/fixtures/knowledge/account_common_questions_faq.pdf")
+OUTPUT_PATH = Path("data/evaluation/knowledge/account_common_questions_faq.pdf")
 
 
 def _draw_page_number(canvas, document) -> None:  # type: ignore[no-untyped-def]

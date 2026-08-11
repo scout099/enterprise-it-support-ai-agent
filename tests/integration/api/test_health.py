@@ -6,8 +6,14 @@ import pytest
 from apps.api.main import create_app
 from fastapi import Query
 from fastapi.testclient import TestClient
+from psycopg import Error as PsycopgError
 
 from enterprise_it_support.platform.config import Settings
+
+
+class CheckpointFailureRuntime:
+    async def run(self, **_kwargs: object) -> None:
+        raise PsycopgError("fictional-checkpoint-secret")
 
 
 def test_health_endpoint_reports_process_status(test_settings: Settings) -> None:
@@ -102,3 +108,29 @@ def test_validation_errors_use_unified_response(test_settings: Settings) -> None
         }
     }
     assert response.headers["x-request-id"] == "request-422"
+
+
+def test_agent_checkpoint_failures_return_safe_service_unavailable(
+    test_settings: Settings,
+) -> None:
+    app = create_app(
+        settings=test_settings,
+        agent_runtime=CheckpointFailureRuntime(),  # type: ignore[arg-type]
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agent/runs",
+            json={"user_message": "VPN issue", "user_role": "employee"},
+            headers={"X-Request-ID": "checkpoint-503"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "service_unavailable",
+            "message": "Agent Runtime is temporarily unavailable",
+            "request_id": "checkpoint-503",
+        }
+    }
+    assert "fictional-checkpoint-secret" not in response.text

@@ -75,12 +75,17 @@ class SearchFilters:
     """Allowlisted document and validity filters for retrieval."""
 
     document_id: UUID | None = None
+    document_ids: frozenset[UUID] | None = None
     source_type: DocumentSourceType | None = None
     status: DocumentStatus | None = None
     effective_at: datetime | None = None
     expires_at: datetime | None = None
 
     def __post_init__(self) -> None:
+        if self.document_id is not None and self.document_ids is not None:
+            raise ValueError("document_id and document_ids filters are mutually exclusive")
+        if self.document_ids is not None and not self.document_ids:
+            raise ValueError("document_ids filter cannot be empty")
         for field_name, value in (
             ("effective_at", self.effective_at),
             ("expires_at", self.expires_at),
@@ -325,6 +330,8 @@ class RetrievalRepository:
             )
         if filters.document_id is not None:
             eligible_versions = eligible_versions.where(Document.id == filters.document_id)
+        if filters.document_ids is not None:
+            eligible_versions = eligible_versions.where(Document.id.in_(filters.document_ids))
         if filters.source_type is not None:
             eligible_versions = eligible_versions.where(
                 Document.source_type == filters.source_type.value

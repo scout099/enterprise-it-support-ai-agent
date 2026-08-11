@@ -15,7 +15,7 @@ from sqlalchemy import create_engine, text
 
 from enterprise_it_support.platform.config import Environment, Settings, get_settings
 
-FIXTURES = Path(__file__).parents[2] / "fixtures" / "knowledge"
+FIXTURES = Path(__file__).parents[3] / "data" / "evaluation" / "knowledge"
 
 
 @pytest.mark.integration

@@ -216,6 +216,51 @@ class RAGAnswerService:
                 error_code="retrieval_unavailable",
             )
             raise
+        return await self._answer_with_results(
+            question=normalized_question,
+            user_role=normalized_role,
+            conversation_id=conversation_id,
+            request_id=request_id,
+            retrieval_results=retrieval_results,
+            started=started,
+        )
+
+    async def answer_from_results(
+        self,
+        *,
+        question: str,
+        user_role: str,
+        conversation_id: UUID | None,
+        request_id: str,
+        retrieval_results: tuple[SearchResult, ...],
+    ) -> ChatTurnResult:
+        """Compose and persist a grounded answer from evidence retrieved by a graph node."""
+        normalized_question = question.strip()
+        normalized_role = user_role.strip()
+        if not normalized_question:
+            raise ValueError("Question cannot be blank")
+        if not normalized_role:
+            raise ValueError("User role cannot be blank")
+        await self._validate_conversation_access(conversation_id, normalized_role)
+        return await self._answer_with_results(
+            question=normalized_question,
+            user_role=normalized_role,
+            conversation_id=conversation_id,
+            request_id=request_id,
+            retrieval_results=retrieval_results,
+            started=monotonic(),
+        )
+
+    async def _answer_with_results(
+        self,
+        *,
+        question: str,
+        user_role: str,
+        conversation_id: UUID | None,
+        request_id: str,
+        retrieval_results: tuple[SearchResult, ...],
+        started: float,
+    ) -> ChatTurnResult:
         relevant_results = self._relevance_policy.select(retrieval_results)
         controlled_evidence = self._build_controlled_context(relevant_results)
         if not controlled_evidence:
@@ -225,7 +270,7 @@ class RAGAnswerService:
         else:
             try:
                 model_response = await self._generate(
-                    question=normalized_question,
+                    question=question,
                     evidence=controlled_evidence,
                 )
                 metadata = model_response.metadata
@@ -237,8 +282,8 @@ class RAGAnswerService:
                 await self._save_model_failure(
                     exception=exception,
                     conversation_id=conversation_id,
-                    user_role=normalized_role,
-                    question=normalized_question,
+                    user_role=user_role,
+                    question=question,
                     retrieval_results=retrieval_results,
                     started=started,
                     request_id=request_id,
@@ -250,8 +295,8 @@ class RAGAnswerService:
                 await self._save_model_failure(
                     exception=exception,
                     conversation_id=conversation_id,
-                    user_role=normalized_role,
-                    question=normalized_question,
+                    user_role=user_role,
+                    question=question,
                     retrieval_results=retrieval_results,
                     started=started,
                     request_id=request_id,
@@ -263,8 +308,8 @@ class RAGAnswerService:
                 await self._save_model_failure(
                     exception=exception,
                     conversation_id=conversation_id,
-                    user_role=normalized_role,
-                    question=normalized_question,
+                    user_role=user_role,
+                    question=question,
                     retrieval_results=retrieval_results,
                     started=started,
                     request_id=request_id,
@@ -275,8 +320,8 @@ class RAGAnswerService:
             except RAGCitationValidationError:
                 await self._save_failed_trace(
                     conversation_id=conversation_id,
-                    user_role=normalized_role,
-                    question=normalized_question,
+                    user_role=user_role,
+                    question=question,
                     retrieval_results=retrieval_results,
                     metadata=model_response.metadata,
                     started=started,
@@ -289,10 +334,10 @@ class RAGAnswerService:
         latency_ms = max(0, int((monotonic() - started) * 1000))
         saved = await self._conversation_store.save_turn(
             conversation_id=conversation_id,
-            user_role=normalized_role,
+            user_role=user_role,
             trace=TurnTrace(
-                question=normalized_question,
-                retrieval_query=normalized_question,
+                question=question,
+                retrieval_query=question,
                 retrieved_chunk_ids=tuple(result.chunk_id for result in retrieval_results),
                 model_metadata=metadata,
                 assistant_content=answer.answer,

@@ -15,7 +15,7 @@ from enterprise_it_support.knowledge.service import DocumentIngestionService, Lo
 from enterprise_it_support.platform.config import Environment, Settings, get_settings
 from enterprise_it_support.platform.database import DatabaseManager
 
-FIXTURES = Path(__file__).parents[2] / "fixtures" / "knowledge"
+FIXTURES = Path(__file__).parents[3] / "data" / "evaluation" / "knowledge"
 
 
 @pytest.fixture

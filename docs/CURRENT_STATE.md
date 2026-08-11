@@ -1,60 +1,43 @@
 # Current State
 
-- **更新时间：** 2026-07-23
-- **当前完成阶段：** Phase 5：可信 RAG 问答
-- **工程结论：** PASS（本地演示 MVP；不等于生产安全认证或逐句事实蕴含）
-- **阶段结论：** CONDITIONAL PASS（工程已通过；用户学习验收尚未完成）
-- **数据库 Head：** `20260722_0006`
-- **Git 基线：** `17255bd chore: import current project snapshot`
+- **更新时间：** 2026-08-05
+- **当前完成阶段：** Phase 12：部署、CI、安全检查和作品集包装
+- **阶段结论：** CONDITIONAL PASS（本地工程门禁 PASS；GitHub-hosted CI 需在提交/推送后确认）
+- **数据库 Head：** `20260801_0013`
+- **Git 状态：** Phase 6–12 与根目录工作规则已收敛到 `feat(delivery): complete phases 6-12` 阶段提交；提交后工作区 clean
 
-## 已实现
+## 当前可运行能力
 
-- FastAPI、统一错误、request ID、结构化日志、health/readiness；
-- PostgreSQL/pgvector、Alembic 与版本化知识导入；
-- Markdown、UTF-8 TXT、可提取文本 PDF、Chunking 和 Embedding Profile；
-- PostgreSQL FTS、pgvector cosine retrieval、RRF、去重、top-k 与授权候选过滤；
-- `SearchResult` 分离 `rrf_score`、`keyword_score`、`vector_similarity`；
-- 配置化 `RelevancePolicy`：Fake Profile 只使用确定性关键词证据；真实向量阈值必须显式绑定 `<model>:<dimension>:<version>`，不匹配时配置失败关闭；
-- Citation 来源绑定：模型只能选择 Context E 标签，服务器从授权 Retrieval 结果物化 title/version/section/chunk ID；
-- `ModelGateway.generate_structured_response()`、Fake/OpenAI-compatible Adapter、每次 timeout、有限重试、Prompt/model/attempt/Token 元数据；
-- strict `RAGModelOutput` 的全部字段均 required 且禁止额外字段；
-- `RAGAnswerService`：相关性筛选、受控 JSON Context、Pydantic 校验、拒答与 Citation allowlist；
-- `conversations`/`messages` 与 `TurnTrace`：succeeded/refused/failed、error stage/code、问题、query、Chunk IDs、模型/Prompt/Token、回答、延迟、request ID；
-- `POST /chat/ask`、`GET /chat/conversations/{conversation_id}` 和 `python -m scripts.chat`；
-- `phase-5-v1` 评测集：15 个正样本、3 个负样本，输出 Recall@3/5、闸门层 false-answer 代理指标和 abstention accuracy。
+- FastAPI + PostgreSQL/pgvector 模块化单体，覆盖版本化知识导入、混合检索、可信 RAG、LangGraph Agent、7 个只读 Mock 工具、本地工单、RBAC、R0–R4、Human-in-the-loop 模拟审批、30-case Evaluation、Streamlit Chat/Dashboard；
+- Tool 调用统一经过 Registry、严格 Schema、权限/风险 Policy、timeout/retry、幂等与脱敏审计；应用不存在 Shell、Python、SQL、`eval`、`exec`、`subprocess` 任意执行入口；
+- Markdown/TXT/PDF 上传同时校验 suffix、allowlisted media type 和 5 MB 大小上限；检索内容与用户输入均视为不可信数据；
+- Docker Compose 按 `db healthy → migrate exited 0 → api healthy → ui healthy` 启动；API/UI 使用 UID 10001 非 root，端口只绑定 localhost；
+- 自动迁移要求单一 Alembic head，只执行 `upgrade head`，数据库已在 head 时 no-op，不执行 downgrade、drop、reset 或 seed；
+- GitHub Actions 包含 Ruff、pytest + 真实 pgvector、migration 重复 no-op + drift、30-case Evaluation、Gitleaks 和两个 Docker build；
+- README、5 分钟 Demo、面试指南、三方向简历 Bullet 与 Phase 12 报告已完成。
 
-## 未实现
+## Phase 12 验证快照
 
-- 请求分类、LangGraph 诊断、工具、Policy/Audit、工单、Web UI；
-- 可信身份认证、Principal/subject/tenant 绑定；
-- 回答逐句蕴含评估或自动 groundedness 判定；
-- 真实付费 Provider smoke。
+- 标准全量测试：`.venv/bin/python -m pytest -q` → `245 passed in 17.98s`；数据库语义使用真实隔离 PostgreSQL/pgvector；
+- Ruff → `All checks passed!`；format → `170 files already formatted`；compileall、pip check、security boundary、Git whitespace 均通过；
+- migration：开发/测试库均已在 `20260801_0013`；安全入口连续执行两次均 no-op；`alembic check` → `No new upgrade operations detected.`；
+- Evaluation：`eval-20260805T141357Z-046e52d7`，Gate PASS；Recall@3/5 `1.0/1.0`、MRR `0.8333`、Citation Validity `1.0`、Evidence Coverage `1.0`、Unsupported Claim Rate `0.0`、Intent/Tool/Workflow `1.0`、Prohibited Action Rate `0.0`；`knowledge-07/08` 仍为拒答准确性失败，Refusal Correctness `0.7778`；
+- previous-run diff 因 `knowledge_corpus_fingerprint_changed` 明确为不可比较，没有把 MRR 差异伪装成回归或改进；
+- Docker：FastAPI、Streamlit、migration 镜像实际 build 成功；Compose 中 db/api/ui healthy、migrate exited 0；`/health`、`/ready`、Streamlit `/_stcore/health` 均通过；
+- 容器内 seed 连续两次均返回 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback；容器内 30-case Evaluation Gate PASS；
+- Gitleaks v8.30.1 官方包 SHA-256 校验通过；精确排除本地 `.venv` 和三条显式非密钥测试幂等值后，最终工作区约 6.17 MB 与 3 个 Git commits 均 `no leaks found`；仓库安全脚本也通过；
+- Prompt Injection 聚焦测试、上传 MIME/大小测试和越权/审批/审计聚焦集均通过；完整行为由 245 项全量回归覆盖。
 
-## 验证快照
+## 已知限制与未完成外部验证
 
-- 全量 pytest：`133 passed in 4.34s`；
-- Phase 5 Blocking 聚焦回归：`60 passed in 2.39s`；
-- Ruff lint：`All checks passed!`；
-- Ruff format：`88 files already formatted`；
-- compileall：成功；pip check：`No broken requirements found`；
-- migration：test DB `0006 → 0005 → 0006` 成功，开发库和测试库均为 `20260722_0006 (head)`；
-- Retrieval/abstention CLI：18 cases，Recall@3=`0.9333333333333333`、Recall@5=`1.0`、false_answer_rate=`0.0`、abstention_accuracy=`1.0`；CLI 明确输出 `false_answer_rate_scope=relevance_gate_proxy`；
-- 默认 Fake 的真实 CLI 在 VPN 配置文档与 VPN 安全干扰文档并存时，按确定性关键词重合度选择配置片段并返回来源绑定 Citation；
-- 非空知识库仅有 VPN 文档时询问量子打印机政策：拒答、不调用模型，但保存原始检索 Chunk IDs；
-- timeout、Provider unavailable、malformed schema、Citation 越界和 retrieval failure：HTTP 安全 502/503，数据库均有 failed trace 且没有 Provider 原始异常正文。
+- GitHub Actions workflow 已静态解析，所有对应命令和镜像在本机通过；但当前没有提交或 push，未产生 GitHub-hosted workflow run，因此不能声称远端 CI 已绿；
+- 当前依赖使用受 major version 约束而非完整 lockfile；本轮 Python 3.12 镜像从干净环境解析、构建和 smoke 通过，但长期可复现发布仍应引入受控依赖更新流程；
+- 没有生产 SSO、可信 Principal、tenant isolation、真实企业 Adapter、secret manager、TLS、高可用、供应链签名或漏洞认证；本地 actor/role 仍是 Demo 输入；
+- R3 只产生模拟结果；Approval decision 与 graph resume 仍非单一事务；本地文件与 PostgreSQL 也不是单一原子事务；
+- PDF 不做 OCR；pgvector 当前 exact scan；30 条虚构 Evaluation 和词法 groundedness 不代表生产分布或 SLA；
+- Streamlit 是同步本地 Demo，Dashboard 没有大规模性能、缓存、预聚合和生产数据生命周期验证；
+- 根目录 `AGENTS.md` 已建立，固定 repo-first 接手、Phase 范围、确定性安全边界、真实 PostgreSQL 验证、文档闭环和 Git hygiene 规则。
 
-## 已知限制与安全边界
+## 阶段停止点
 
-- `user_role` 仍由请求体/query 自报，不构成可信认证或生产授权；当前 API 只能作为本地演示；
-- Conversation 尚无 `subject_id/tenant_id`，不能用于多用户生产隔离；
-- 真实 Embedding/Model endpoint 会接收员工查询和/或授权企业 Context，启用前必须完成数据区域、保留和组织政策确认；
-- Citation 只保证来源绑定，不证明回答每句话被对应片段蕴含；
-- 相关性阈值只针对当前演示 Profile/数据集；切换模型、维度、版本或语料后必须重校准并更新 Profile 绑定；
-- `false_answer_rate` 是相关性闸门是否会把负样本交给模型的代理指标，不证明真实 Provider 的回答级错误率；
-- 多轮历史保存但不自动进入下一轮 query/Prompt；
-- Context 仍按字符上限截断首个超长 Chunk，完整 Chunk 策略尚未实施；
-- Conversation GET 无分页，真实 Model/Embedding client 尚未统一 `aclose()`；
-- 数据库本身不可用时，失败轨迹无法写回同一数据库，需由外部日志/监控承接；
-- 根目录没有 `AGENTS.md`，没有虚构项目级 Agent 规则。
-
-下一步必须由用户明确确认；当前任务不得自动进入 Phase 6 请求分类或后续 Agent Phase。
+Phase 12 的仓库内实现、本地验收和 Phase 6–12 阶段提交已完成，没有剩余 Blocking 代码缺口。唯一条件是 push 后观察 GitHub-hosted CI；本次不擅自 push 或 tag。未经项目所有者确认，不自动开始新的 Phase 或生产集成。

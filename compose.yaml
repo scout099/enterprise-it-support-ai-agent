@@ -16,5 +16,83 @@ services:
       timeout: 3s
       retries: 15
 
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    command: ["python", "-m", "scripts.run_migrations"]
+    environment: &app-environment
+      IT_SUPPORT_ENVIRONMENT: development
+      IT_SUPPORT_DEBUG: "false"
+      IT_SUPPORT_LOG_LEVEL: INFO
+      IT_SUPPORT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-it_support}:${POSTGRES_PASSWORD:-change-me-local-only}@db:5432/${POSTGRES_DB:-enterprise_it_support}
+      IT_SUPPORT_KNOWLEDGE_STORAGE_PATH: /app/data/knowledge
+      IT_SUPPORT_EMBEDDING_PROVIDER: fake
+      IT_SUPPORT_EMBEDDING_MODEL: fake-embedding-v1
+      IT_SUPPORT_EMBEDDING_DIMENSION: "8"
+      IT_SUPPORT_EMBEDDING_VERSION: v1
+      IT_SUPPORT_MODEL_PROVIDER: fake
+      IT_SUPPORT_MODEL_NAME: fake-chat-v1
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    environment: *app-environment
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - knowledge_data:/app/data/knowledge
+      - evaluation_artifacts:/app/artifacts/evaluations
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.streamlit
+    environment:
+      IT_SUPPORT_API_BASE_URL: http://api:8000
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+      STREAMLIT_BROWSER_SERVER_ADDRESS: localhost
+    ports:
+      - "127.0.0.1:${UI_PORT:-8501}:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  knowledge_data:
+  evaluation_artifacts:

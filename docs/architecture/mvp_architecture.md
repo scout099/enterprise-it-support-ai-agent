@@ -68,14 +68,14 @@ flowchart TB
 | Tool Registry | 保存允许调用的工具定义及版本 | 按名称解析工具及其 Schema、风险和权限元数据 | Adapter 构造方式 |
 | Tool Gateway | 统一校验、授权和执行工具，记录每次尝试 | 请求执行已注册工具并返回结构化结果 | 具体 Mock 数据源、审计存储查询 |
 | Policy | 基于用户、工具和动作做确定性判定 | 返回 Allow 或 Deny 及原因 | 规则存储方式和规则匹配实现 |
-| Local Ticketing | 创建和查询本地 IT 工单，关联诊断上下文 | 创建工单、查询工单 | SQL 和数据库模型 |
-| Evaluation | 管理评估案例、运行指标、保存可比较结果 | 运行评估、读取报告 | Judge Prompt、批处理实现 |
+| Local Ticketing | 创建/读取本地工单，保存确认、评论和脱敏审计 | proposal、confirm、status、audit page | SQL 和数据库模型 |
+| Evaluation | 校验版本化案例、驱动正式 Agent、计算规则指标、比较并写报告 | CLI 运行、JSON/Markdown、门禁状态 | Judge Prompt、批处理与报告渲染实现 |
 | Persistence | 事务、Repository、迁移和数据库连接 | 由各业务模块内部使用的持久化 Adapter | 连接池和 SQLAlchemy 细节 |
 
 ### 4.1 关键 seam
 
 - **Model seam**：生产配置的模型 Adapter 与测试用确定性 Adapter 均满足 Model Gateway 内部约定。
-- **Tool seam**：Tool Gateway 只接受 Registry 中的工具定义；MVP 使用只读 Mock Adapter，未来真实 Adapter 不改变 Agent 的调用方式。
+- **Tool seam**：Tool Gateway 只接受 Registry 中的工具定义；诊断使用只读 Mock Adapter，本地 Service Desk 使用 R0/R1 Adapter；R1 必须持有匹配的 pending confirmation。Phase 9 指定 R3 场景走独立 Governance workflow，批准后也只有本地模拟执行器；同一 Approval 的 decision/resume 由 PostgreSQL advisory lock 串行化，`resumed_at` 提供可恢复完成标记。
 - **Persistence seam**：业务逻辑依赖 Repository 行为，不在 Agent 节点中编写 SQL。
 - **Parser seam**：不同文件格式在 Ingestion 模块内部适配为统一的规范化文档，不把解析器类型暴露给后续检索模块。
 
@@ -117,10 +117,18 @@ sequenceDiagram
     end
 
     alt Unresolved or user requests escalation
-        R->>I: Create ticket from run context
-        I->>D: Persist with idempotency key
-        D-->>I: Ticket ID
-        I-->>R: Structured ticket result
+        R->>I: Prepare ticket action from run context
+        I->>D: Persist pending confirmation
+        D-->>I: Pending action and impact
+        I-->>A: Return confirmation request
+        A-->>U: Display action, parameters, and impact
+        U->>A: Explicit confirmation
+        A->>T: Confirmed R1 tool request
+        T->>P: Recheck actor, role, action, parameters, and risk
+        P-->>T: Allow or Deny
+        T->>D: Atomic ticket plus tool/domain audit
+        D-->>T: Ticket result
+        T-->>A: Persisted ticket result
     end
 
     R->>M: Generate grounded response from evidence and facts
@@ -140,7 +148,7 @@ sequenceDiagram
 3. **请求识别**：Model Gateway 返回受 Schema 约束的类别、置信度和理由；确定性路由规则处理低置信度结果。
 4. **知识检索**：Retrieval 生成查询向量，从 pgvector 获取候选 Chunk，并返回带稳定 citation ID 的证据。
 5. **诊断编排**：对应工作流判断是否缺少信息、是否需要只读状态，以及是否具备回答条件。
-6. **受控工具调用**：Tool Gateway 从 Registry 解析工具，校验参数，调用 Policy，写审计后才可执行 Mock Adapter。
+6. **受控工具与治理**：Tool Gateway 从 Registry 解析 R0/R1 工具并校验参数；R1 先保存 pending、确认后重新校验。指定 R3 场景由确定性 Policy Engine 检查本地 RBAC 与业务理由，创建 Approval Request 后 interrupt，approver 决策再恢复同一 checkpoint；恢复成功才写 `resumed_at`，受控故障可用同一不可变决定重试；批准只产生模拟结果。
 7. **有依据生成**：Model Gateway 只能使用传入的证据和结构化工具结果生成回答，引用必须指向实际检索结果。
 8. **保存结果**：系统在同一逻辑流程中保存步骤、引用、工具审计、最终答案和可选工单关联。
 9. **评估回流**：Evaluation 使用已保存轨迹或版本化数据集计算指标，不阻塞普通用户请求。
@@ -171,7 +179,7 @@ flowchart LR
 | 回答 | 根据提供的证据组织自然语言 | 保证引用存在、限制可用上下文、无证据拒答规则 |
 | 诊断 | 建议下一步问题或解释状态 | 状态转换、最大步骤数、结束条件、错误恢复 |
 | 工具 | 从允许列表中提出工具及参数 | Registry 解析、Schema 校验、Policy、执行、超时和审计 |
-| 工单 | 生成问题摘要和已尝试步骤 | 创建记录、字段约束、事务和 ID 生成 |
+| 工单 | 生成问题摘要和已尝试步骤 | 风险分类、确认、幂等、字段约束、事务和审计 |
 | 权限 | 可解释为什么可能需要某项信息 | 身份、权限和 Allow/Deny 决策 |
 | 评估 | 作为一个辅助 Judge 给出评分和理由 | 数据集版本、确定性指标、阈值和发布结论 |
 
@@ -196,9 +204,9 @@ MVP 使用同一个 PostgreSQL 实例，但按领域拥有数据：
 | Agent | Run、Step、状态、模型与 Prompt 版本、错误 |
 | Tools | 工具定义版本、执行尝试、Policy 决策、结构化结果摘要 |
 | Tickets | 本地工单、状态、诊断摘要、关联 Run |
-| Evaluation | 数据集、案例、评估 Run、逐项结果、聚合指标 |
+| Evaluation artifacts | 版本化 JSON 数据集/阈值、逐案例原始 JSON、Markdown 报告和 previous-run diff；不新增业务数据库表 |
 
-共享数据库不意味着跨模块直接修改表。每个模块通过自己的 Repository 实现维护数据写入规则；需要跨模块关联时使用稳定 ID 和显式编排。
+共享数据库不意味着跨模块直接修改表。每个模块通过自己的 Repository 实现维护数据写入规则；需要跨模块关联时使用稳定 ID 和显式编排。Phase 10 Evaluation 读取正式 Run/Conversation/Tool 轨迹，但报告写为本地版本化文件，不新增业务表。
 
 ## 9. 错误、安全与可观察性
 
@@ -230,7 +238,7 @@ MVP 使用同一个 PostgreSQL 实例，但按领域拥有数据：
 - **单元测试**：分类兜底、Chunk 规则、引用验证、Policy、Tool Registry、参数 Schema、工作流转换和评估指标；
 - **集成测试**：PostgreSQL/pgvector Repository、三种格式导入、检索、工具审计、本地工单；
 - **端到端测试**：从 Web/API 请求到带引用回答，以及未解决问题创建工单；
-- **评估回归**：版本化案例验证 Hit@5、分类、引用、安全拒答、工具选择和诊断完成率；
+- **评估回归**：版本化案例验证 Recall@3/5、MRR、分类、引用、安全拒答、工具选择/参数和诊断完成率；失败 run 不覆盖最后一个成功 baseline；
 - **安全测试**：未注册工具、非法参数、越权请求、提示注入和引用伪造。
 
 模块公开 interface 是主要测试面；测试验证可观察结果，而不是绑定内部函数调用顺序。

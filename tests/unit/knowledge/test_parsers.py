@@ -7,7 +7,7 @@ import pytest
 from enterprise_it_support.knowledge.domain import DocumentSourceType
 from enterprise_it_support.knowledge.parsers import DocumentParseError, DocumentParserRegistry
 
-FIXTURES = Path(__file__).parents[2] / "fixtures" / "knowledge"
+FIXTURES = Path(__file__).parents[3] / "data" / "evaluation" / "knowledge"
 
 
 def test_txt_parser_returns_normalized_sections_with_line_positions() -> None:

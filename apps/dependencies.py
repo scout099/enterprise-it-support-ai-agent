@@ -4,6 +4,7 @@ import json
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from enterprise_it_support.agent_runtime.state import AgentIntent, IntentClassification
 from enterprise_it_support.intelligence.embeddings import (
     EmbeddingProvider,
     FakeEmbeddingProvider,
@@ -30,6 +31,24 @@ from enterprise_it_support.platform.config import (
     EmbeddingProviderType,
     ModelProviderType,
     Settings,
+)
+from enterprise_it_support.service_desk.persistence import (
+    PendingConfirmationRepository,
+    TicketRepository,
+)
+from enterprise_it_support.service_desk.tools import (
+    ServiceDeskToolAdapter,
+    create_service_desk_tool_registry,
+    service_desk_permissions,
+)
+from enterprise_it_support.tools.gateway import (
+    RolePermissionPolicy,
+    ToolExecutionGateway,
+    ToolExecutionStore,
+)
+from enterprise_it_support.tools.mock import (
+    create_mock_tool_registry,
+    default_tool_permissions,
 )
 
 
@@ -87,7 +106,7 @@ def build_model_gateway(settings: Settings) -> ModelGateway:
         return FakeModelGateway(
             [],
             model_name=settings.model_name,
-            response_factory=_fake_rag_response,
+            response_factory=_fake_model_response,
         )
 
     assert settings.model_api_key is not None
@@ -112,6 +131,112 @@ def build_relevance_policy(settings: Settings) -> RelevancePolicy:
         min_keyword_score=settings.rag_min_keyword_score,
         min_vector_similarity=vector_threshold,
     )
+
+
+def build_tool_gateway(
+    execution_store: ToolExecutionStore,
+    *,
+    ticket_repository: TicketRepository | None = None,
+    confirmation_repository: PendingConfirmationRepository | None = None,
+) -> ToolExecutionGateway:
+    """Build the only Agent-visible path to read-only and local ticket tools."""
+    registry = create_mock_tool_registry()
+    permissions = default_tool_permissions()
+    if ticket_repository is not None:
+        create_service_desk_tool_registry(
+            ServiceDeskToolAdapter(ticket_repository),
+            registry=registry,
+        )
+        for role, grants in service_desk_permissions().items():
+            permissions[role] = permissions.get(role, frozenset()) | grants
+    return ToolExecutionGateway(
+        registry=registry,
+        policy=RolePermissionPolicy(permissions),
+        execution_store=execution_store,
+        confirmation_validator=confirmation_repository,
+    )
+
+
+def _fake_model_response(call: FakeModelCall) -> dict[str, object]:
+    """Dispatch deterministic local outputs by the requested strict Schema."""
+    if call.response_schema is IntentClassification:
+        return _fake_intent_response(call)
+    return _fake_rag_response(call)
+
+
+def _fake_intent_response(call: FakeModelCall) -> dict[str, object]:
+    """Classify common demo requests without pretending this is a learned model."""
+    try:
+        payload = json.loads(call.messages[-1].content)
+        message = str(payload["user_message"]).casefold()
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exception:
+        raise ValueError("Fake classifier received an invalid request payload") from exception
+
+    ticket_terms = ("ticket", "工单", "case")
+    unsafe_terms = ("disable security", "bypass", "steal", "删除审计", "绕过")
+    diagnosis_terms = (
+        "cannot",
+        "can't",
+        "wont",
+        "won't",
+        "error",
+        "failed",
+        "locked",
+        "not working",
+        "无法",
+        "不能",
+        "失败",
+        "报错",
+        "锁定",
+    )
+    area_intents = (
+        (("vpn", "虚拟专用网"), AgentIntent.VPN_DIAGNOSIS),
+        (("outlook", "mail", "邮箱", "邮件"), AgentIntent.OUTLOOK_DIAGNOSIS),
+        (("account", "password", "账号", "密码"), AgentIntent.ACCOUNT_DIAGNOSIS),
+    )
+
+    if any(term in message for term in unsafe_terms):
+        intent = AgentIntent.UNSUPPORTED_REQUEST
+        confidence = 0.98
+        risk_level = "high"
+        missing_information: list[str] = []
+    elif any(term in message for term in ticket_terms):
+        intent = AgentIntent.TICKET_REQUEST
+        confidence = 0.95
+        risk_level = "medium"
+        missing_information = []
+    else:
+        matched_area = next(
+            (
+                area_intent
+                for terms, area_intent in area_intents
+                if any(term in message for term in terms)
+            ),
+            None,
+        )
+        if matched_area is not None and any(term in message for term in diagnosis_terms):
+            intent = matched_area
+            confidence = 0.9
+            risk_level = "low"
+            missing_information = []
+        elif matched_area is not None:
+            intent = AgentIntent.KNOWLEDGE_QUESTION
+            confidence = 0.85
+            risk_level = "low"
+            missing_information = []
+        else:
+            intent = AgentIntent.UNSUPPORTED_REQUEST
+            confidence = 0.4
+            risk_level = "low"
+            missing_information = ["具体 IT 系统、问题或目标"]
+
+    return {
+        "intent": intent.value,
+        "confidence": confidence,
+        "risk_level": risk_level,
+        "missing_information": missing_information,
+        "reasoning_summary": "基于请求主题、故障措辞和当前支持范围完成简短路由。",
+    }
 
 
 def _fake_rag_response(call: FakeModelCall) -> dict[str, object]:

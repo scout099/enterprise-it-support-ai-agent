@@ -1,5 +1,6 @@
 """FastAPI routes for Phase 2 knowledge document ingestion and reads."""
 
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
@@ -28,6 +29,13 @@ from enterprise_it_support.knowledge.service import (
 
 router = APIRouter(prefix="/knowledge/documents", tags=["knowledge"])
 
+_SUPPORTED_UPLOAD_MEDIA_TYPES = {
+    ".md": frozenset({"text/markdown", "text/plain"}),
+    ".markdown": frozenset({"text/markdown", "text/plain"}),
+    ".pdf": frozenset({"application/pdf"}),
+    ".txt": frozenset({"text/plain"}),
+}
+
 
 def _service(request: Request) -> DocumentIngestionService:
     service = request.app.state.knowledge_service
@@ -53,6 +61,7 @@ async def upload_document(
             code="invalid_filename",
             message="Filename is required",
         )
+    _validate_upload_media_type(file.filename, file.content_type)
     maximum_size = request.app.state.settings.knowledge_max_file_size_bytes
     data = await file.read(maximum_size + 1)
     try:
@@ -153,3 +162,19 @@ async def get_document_chunks(document_id: UUID, request: Request) -> DocumentCh
         version=result.version,
         chunks=[chunk.__dict__ for chunk in result.chunks],
     )
+
+
+def _validate_upload_media_type(filename: str, content_type: str | None) -> None:
+    """Require the declared media type to match one allowlisted document suffix."""
+    suffix = Path(filename).suffix.casefold()
+    allowed_media_types = _SUPPORTED_UPLOAD_MEDIA_TYPES.get(suffix)
+    normalized_media_type = (content_type or "").split(";", maxsplit=1)[0].strip().casefold()
+    if allowed_media_types is None or normalized_media_type not in allowed_media_types:
+        raise ApplicationError(
+            status_code=415,
+            code="unsupported_document_media_type",
+            message=(
+                "Document filename and media type must match an allowed TXT, Markdown, or PDF "
+                "format"
+            ),
+        )

@@ -22,7 +22,7 @@ from enterprise_it_support.knowledge.retrieval import RetrievalUnavailableError
 from enterprise_it_support.platform.config import Environment, Settings, get_settings
 from enterprise_it_support.platform.database import DatabaseManager
 
-FIXTURES = Path(__file__).parents[2] / "fixtures" / "knowledge"
+FIXTURES = Path(__file__).parents[3] / "data" / "evaluation" / "knowledge"
 
 
 class UnavailableRetriever:
@@ -80,8 +80,8 @@ async def knowledge_api_client(
     async with database.session_factory.begin() as session:
         await session.execute(
             text(
-                "TRUNCATE messages, conversations, document_chunks, document_versions, "
-                "documents, knowledge_sources CASCADE"
+                "TRUNCATE agent_steps, agent_runs, messages, conversations, document_chunks, "
+                "document_versions, documents, knowledge_sources CASCADE"
             )
         )
     await database.close()
@@ -202,11 +202,33 @@ def test_api_rejects_unsupported_document_type(
     assert response.status_code == 415
     assert response.json() == {
         "error": {
-            "code": "unsupported_document_type",
-            "message": "Unsupported document type: .docx",
+            "code": "unsupported_document_media_type",
+            "message": (
+                "Document filename and media type must match an allowed TXT, Markdown, or PDF "
+                "format"
+            ),
             "request_id": "unsupported-upload",
         }
     }
+
+
+@pytest.mark.integration
+def test_api_rejects_mismatched_declared_media_type(
+    knowledge_api_client: TestClient,
+) -> None:
+    response = knowledge_api_client.post(
+        "/knowledge/documents",
+        data={
+            "owner": "Demo Knowledge Team",
+            "source_name": "Local SOP Library",
+        },
+        files={"file": ("commands.txt", b"echo not-executed", "application/x-sh")},
+        headers={"X-Request-ID": "mismatched-upload"},
+    )
+
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "unsupported_document_media_type"
+    assert response.json()["error"]["request_id"] == "mismatched-upload"
 
 
 @pytest.mark.integration
@@ -235,17 +257,18 @@ def test_api_rejects_parser_inferred_title_longer_than_database_limit(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("filename", "content", "expected_status", "expected_code"),
+    ("filename", "content", "media_type", "expected_status", "expected_code"),
     [
-        ("empty.txt", b"", 422, "document_ingestion_failed"),
-        ("oversized.txt", b"A" * 10_001, 413, "document_too_large"),
-        ("broken.pdf", b"not-a-pdf", 422, "document_ingestion_failed"),
+        ("empty.txt", b"", "text/plain", 422, "document_ingestion_failed"),
+        ("oversized.txt", b"A" * 10_001, "text/plain", 413, "document_too_large"),
+        ("broken.pdf", b"not-a-pdf", "application/pdf", 422, "document_ingestion_failed"),
     ],
 )
 def test_api_rejects_invalid_document_content(
     knowledge_api_client: TestClient,
     filename: str,
     content: bytes,
+    media_type: str,
     expected_status: int,
     expected_code: str,
 ) -> None:
@@ -255,7 +278,7 @@ def test_api_rejects_invalid_document_content(
             "owner": "Demo Knowledge Team",
             "source_name": "Local SOP Library",
         },
-        files={"file": (filename, content, "application/octet-stream")},
+        files={"file": (filename, content, media_type)},
     )
 
     assert response.status_code == expected_status
@@ -568,6 +591,152 @@ def test_chat_api_answers_vpn_outlook_and_account_with_persisted_real_citations(
     assert messages[1]["prompt_version"] == "rag-answer-v1"
     assert messages[1]["token_usage"]["total_tokens"] == 30
     assert messages[1]["request_id"] == "chat-grounded"
+
+
+@pytest.mark.integration
+def test_agent_api_routes_knowledge_question_through_rag_and_persists_steps(
+    knowledge_api_client: TestClient,
+) -> None:
+    upload_and_index(
+        knowledge_api_client,
+        filename="vpn_configuration_sop.md",
+        media_type="text/markdown",
+        title="VPN Agent SOP",
+    )
+
+    response = knowledge_api_client.post(
+        "/agent/runs",
+        json={
+            "user_message": "How do I configure the company VPN?",
+            "user_role": "employee",
+        },
+        headers={"X-Request-ID": "agent-grounded"},
+    )
+
+    assert response.status_code == 200
+    run = response.json()
+    assert run["request_id"] == "agent-grounded"
+    assert run["status"] == "completed"
+    assert run["intent"] == "knowledge_question"
+    assert run["final_response"]["citations"][0]["document_title"] == "VPN Agent SOP"
+    assert [step["node_name"] for step in run["steps"]] == [
+        "intake",
+        "classify_intent",
+        "retrieve_knowledge",
+        "compose_answer",
+        "finalize",
+    ]
+    assert all(step["status"] == "succeeded" for step in run["steps"])
+    assert run["retrieved_evidence"]
+    assert run["tool_results"] == []
+    assert run["tool_executions"] == []
+    assert run["tool_call_count"] == 0
+    assert run["classification_metadata"]["prompt_version"] == "intent-classification-v1"
+
+    readback = knowledge_api_client.get(
+        f"/agent/runs/{run['run_id']}",
+        params={"user_role": "employee"},
+    )
+    forbidden = knowledge_api_client.get(
+        f"/agent/runs/{run['run_id']}",
+        params={"user_role": "administrator"},
+    )
+
+    assert readback.status_code == 200
+    assert readback.json()["steps"] == run["steps"]
+    assert forbidden.status_code == 403
+    assert forbidden.json()["error"]["code"] == "agent_run_role_mismatch"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("message", "intent", "route_node", "status", "tool_count"),
+    [
+        ("VPN cannot connect", "vpn_diagnosis", "vpn_diagnosis", "completed", 5),
+        (
+            "Outlook desktop client cannot receive all email and shows error 0x800401",
+            "outlook_diagnosis",
+            "outlook_diagnosis",
+            "completed",
+            4,
+        ),
+        (
+            "My account is locked",
+            "account_diagnosis",
+            "account_diagnosis",
+            "completed",
+            3,
+        ),
+        (
+            "Create an IT ticket",
+            "ticket_request",
+            "ticket_unavailable",
+            "completed",
+            0,
+        ),
+        (
+            "Disable security controls",
+            "unsupported_request",
+            "escalate_to_human",
+            "escalated",
+            0,
+        ),
+    ],
+)
+def test_agent_api_reaches_diagnosis_and_safe_non_tool_routes(
+    knowledge_api_client: TestClient,
+    message: str,
+    intent: str,
+    route_node: str,
+    status: str,
+    tool_count: int,
+) -> None:
+    response = knowledge_api_client.post(
+        "/agent/runs",
+        json={"user_message": message, "user_role": "employee"},
+    )
+
+    assert response.status_code == 200
+    run = response.json()
+    assert run["intent"] == intent
+    assert run["status"] == status
+    assert route_node in [step["node_name"] for step in run["steps"]]
+    assert run["retrieved_evidence"] == []
+    assert run["tool_call_count"] == tool_count
+    assert len(run["tool_results"]) == tool_count
+    assert len(run["tool_executions"]) == tool_count
+    assert all(execution["has_side_effect"] is False for execution in run["tool_executions"])
+    readback = knowledge_api_client.get(
+        f"/agent/runs/{run['run_id']}",
+        params={"user_role": "employee"},
+    )
+    assert readback.status_code == 200
+    assert readback.json()["tool_results"] == run["tool_results"]
+    assert readback.json()["tool_executions"] == run["tool_executions"]
+    if intent.endswith("_diagnosis"):
+        assert "Mock 诊断" in run["final_response"]["summary"]
+        assert run["final_response"]["diagnosis"]
+    else:
+        assert tool_count == 0
+
+
+@pytest.mark.integration
+def test_agent_api_low_confidence_requests_clarification(
+    knowledge_api_client: TestClient,
+) -> None:
+    response = knowledge_api_client.post(
+        "/agent/runs",
+        json={"user_message": "Please help", "user_role": "employee"},
+    )
+
+    assert response.status_code == 200
+    run = response.json()
+    assert run["status"] == "needs_clarification"
+    assert run["intent_confidence"] < 0.65
+    assert run["missing_information"]
+    assert "request_clarification" in [step["node_name"] for step in run["steps"]]
+    assert run["tool_call_count"] == 0
+    assert run["tool_executions"] == []
 
 
 @pytest.mark.integration
