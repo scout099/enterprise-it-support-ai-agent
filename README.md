@@ -1,6 +1,6 @@
 # Enterprise IT Support AI Agent
 
-Enterprise IT Support AI Agent 是一个面向企业内部员工的 IT 支持应用。本仓库当前完成到 **Phase 5：可信 RAG 问答**，已在版本化知识导入、授权混合检索和真实 Citation 之上实现结构化回答、无证据拒答、Conversation 轨迹、聊天 API 与 CLI。
+Enterprise IT Support AI Agent 是一个面向企业内部员工的本地演示型 IT 支持应用。本仓库当前完成到 **Phase 5：可信 RAG 问答**，已在版本化知识导入、授权混合检索和 Citation 来源绑定之上实现结构化回答、相关性拒答、完整 Turn 轨迹、聊天 API 与 CLI。
 
 当前尚未实现请求分类、LangGraph 诊断、工具调用、工单或 Web UI。完整 MVP 范围见 [`docs/product_scope.md`](docs/product_scope.md)，当前事实见 [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md)，Phase 5 验收见 [`docs/phase_reports/phase_5.md`](docs/phase_reports/phase_5.md)。
 
@@ -79,7 +79,7 @@ PostgreSQL 端口只绑定到 `127.0.0.1`，不会直接暴露给局域网中的
 IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head
 ```
 
-迁移依次启用 PostgreSQL `vector` 扩展、创建知识表、增加 embedding Profile、Document visibility/roles 与 Chunk 全文 GIN 索引，并创建 conversations/messages 轨迹表。应用的 `/ready` 只有在数据库可连接并且 vector 扩展存在时才返回 ready。
+迁移依次启用 PostgreSQL `vector` 扩展、创建知识表、增加 embedding Profile、Document visibility/roles 与 Chunk 全文 GIN 索引，创建 conversations/messages 轨迹表，并增加 succeeded/refused/failed Turn outcome。应用的 `/ready` 只有在数据库可连接并且 vector 扩展存在时才返回 ready。
 
 ## 启动 FastAPI
 
@@ -100,7 +100,7 @@ IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic upgrade head
 - `POST /knowledge/documents/{document_id}/index`：索引 pending Chunks，可用 JSON `{"force": true}` 强制重算；
 - `GET /knowledge/documents/{document_id}/index-status`：读取当前 Embedding Profile 覆盖状态；
 - `POST /knowledge/search`：返回经过权限、状态和有效期过滤的混合检索证据；
-- `POST /chat/ask`：检索授权知识、生成或拒答、保存轨迹并返回真实 Citation；
+- `POST /chat/ask`：检索授权知识、生成或拒答、保存轨迹并返回来源绑定 Citation；
 - `GET /chat/conversations/{conversation_id}?user_role=employee`：读取固定角色的完整多轮轨迹；
 - `/docs`：FastAPI 自动生成的 OpenAPI 界面。
 
@@ -123,7 +123,7 @@ curl -i \
 .venv/bin/python -m scripts.index_documents
 ```
 
-执行 15 条 Retrieval 评估并显式导入三份目标文档与三份近主题干扰文档：
+执行 15 个正样本和 3 个负样本评估，并显式导入三份目标文档与三份近主题干扰文档：
 
 ```bash
 .venv/bin/python -m scripts.evaluate_retrieval --seed-fixtures
@@ -163,6 +163,8 @@ curl -i \
 
 默认 `fake` ModelGateway 会从真实检索 Context 生成可重复的本地演示回答，不访问外部 API。真实 OpenAI-compatible 运行需要在被忽略的 `.env` 中配置 provider、model、base URL 和 API key；自动测试始终禁止真实模型。
 
+> **企业数据提示：** 启用真实 Embedding 或 Model Provider 后，员工查询和/或授权知识片段会发送到配置的外部 endpoint。使用真实企业数据前必须确认供应商、区域、保留策略、访问控制和组织数据处理政策；不要把“OpenAI-compatible”理解为数据仍留在本机。
+
 每个 HTTP 响应都包含 `X-Request-ID`。调用方可以传入只含字母、数字、点、下划线或连字符的 `X-Request-ID`，否则系统会生成新的 UUID。
 
 ## 运行测试
@@ -190,10 +192,10 @@ curl -i \
 - PostgreSQL 全文关键词检索和 pgvector cosine semantic retrieval；
 - 共同的状态、版本、有效期、Document、类型和角色权限过滤；
 - RRF 混合排序、Chunk 去重、top-k 和完整 Citation；
-- `/knowledge/search`、15 条查询数据集与 Recall@3/Recall@5 CLI。
+- `/knowledge/search`、15 个正样本 + 3 个负样本数据集，以及 Recall@3/Recall@5、闸门层 `false_answer_rate` 代理指标、abstention accuracy CLI。
 - ModelGateway Fake/OpenAI-compatible 合同、超时、有限重试、JSON Schema 和 Token 元数据；
 - 有证据回答、零证据/模型拒答、Context 上限、malformed 输出和 Citation 越界；
-- conversations/messages migration、完整调用轨迹、多轮顺序和角色不变；
+- conversations/messages migration、成功/拒答/失败调用轨迹、多轮顺序和角色不变；
 - `/chat/ask`、会话读取、VPN/Outlook/账号、角色受限知识和聊天 CLI。
 
 数据库集成测试不会用 SQLite 或无意义 Mock 替代 PostgreSQL。
@@ -243,6 +245,9 @@ curl -i \
 | `IT_SUPPORT_MODEL_MAX_OUTPUT_TOKENS` | 单次结构化回答输出上限 |
 | `IT_SUPPORT_RAG_TOP_K` | 每次回答最多检索的 Chunk 数 |
 | `IT_SUPPORT_RAG_MAX_CONTEXT_CHARS` | 传入模型的序列化 Context 字符上限 |
+| `IT_SUPPORT_RAG_MIN_KEYWORD_SCORE` | 关键词证据最低 raw FTS score；必须随检索基线校准 |
+| `IT_SUPPORT_RAG_MIN_VECTOR_SIMILARITY` | 真实 Embedding Profile 的最低 cosine similarity；Fake Profile 不使用 |
+| `IT_SUPPORT_RAG_VECTOR_THRESHOLD_PROFILE` | 真实向量阈值的校准 Profile，必须精确等于 `<model>:<dimension>:<version>`，不匹配时启动失败 |
 
 数据库 URL 使用 Pydantic `SecretStr` 保存。应用日志只输出固定字段，并对常见 `api_key`、`authorization`、`password`、`secret` 和 `token` 文本形式进行基础脱敏。
 
@@ -273,18 +278,18 @@ Phase 5 已实现：
 - 单文档索引 API、状态 API 和批量 CLI。
 - `KnowledgeRetriever.search(query, top_k, filters, user_context)`；
 - PostgreSQL full-text 和 pgvector exact cosine 两路候选检索；
-- Reciprocal Rank Fusion、Chunk 去重和最终 top-k；
+- Reciprocal Rank Fusion、Chunk 去重、raw keyword/vector 信号和最终 top-k；
 - 默认 active/当前有效/未过期/最新 Version 过滤；
 - `public` 与 `role_restricted + allowed_roles` 检索前过滤；
 - 包含标题、版本、Section 和 Chunk ID 的 Citation；
 - Retrieval-only API 与可执行评估 CLI。
 - `ModelGateway.generate_structured_response()`、Fake 与 OpenAI-compatible Adapter；
 - 配置化模型、单次 timeout、有限瞬时重试、Prompt/model/Token/attempt 元数据；
-- `rag-answer-v1`、有界 Context、结构化回答和确定性无证据拒答；
+- `RelevancePolicy`、阈值与 Embedding Profile 绑定、`rag-answer-v1`、有界 Context、结构化回答和确定性低相关/无证据拒答；
 - 模型只选择 Context E 标签，最终 Citation 由 Retrieval `SearchResult` 物化；
-- conversations/messages、完整回答轨迹、固定角色和多轮保存；
+- conversations/messages、succeeded/refused/failed TurnTrace、固定角色和多轮保存；
 - `POST /chat/ask`、`GET /chat/conversations/{id}` 与 `scripts.chat` CLI；
-- VPN、Outlook、账号和 role-restricted 知识的 Fake Model 演示测试。
+- VPN、Outlook、账号和 role-restricted 知识的 Fake Model 演示测试；默认 Fake 通过确定性关键词重合度从受控 Context 选择证据，不依赖 Fake Embedding 的伪语义。
 
 重复判断基于同一 Knowledge Source、同一 Document title 和规范化文本的 SHA-256。相同内容复用已有 Version；内容变化创建新 Version 并保留历史。原始文件使用 UUID 文件名存入 `data/knowledge/raw/`，该运行目录不会提交到 Git。
 
@@ -295,7 +300,7 @@ Phase 5 明确不包含：
 - 工具调用、企业系统 Adapter 或工单；
 - Web UI。
 
-已知限制：PDF 仅支持非加密、可提取文本的文件，不做 OCR；TXT/Markdown 只接受 UTF-8；向量检索为 exact scan，全文配置为 `simple` 且没有中文分词插件；角色名精确匹配，`user_role` 尚未连接可信认证；多轮历史已保存但不自动加入下一轮 Prompt；默认 Fake Model 只证明流程，真实 OpenAI-compatible endpoint 尚未做付费 smoke；服务器能保证引用来自当前 Retrieval，但逐句蕴含仍需要后续回答评估；15 条 Retrieval 数据仍是小型基线；本地文件系统和 PostgreSQL 不能组成单一原子事务。
+已知限制：PDF 仅支持非加密、可提取文本的文件，不做 OCR；TXT/Markdown 只接受 UTF-8；向量检索为 exact scan，全文配置为 `simple` 且没有中文分词插件；角色名精确匹配，`user_role` 尚未连接可信认证，因此当前权限只适合本地演示；多轮历史已保存但不自动加入下一轮 Prompt；默认 Fake Model 只证明流程，真实 OpenAI-compatible endpoint 尚未做付费 smoke；服务器只保证 Citation 来源绑定，逐句蕴含仍需要回答评估；18 条正负样本仍是小型基线，`false_answer_rate` 是“相关性闸门是否会调用模型”的确定性代理，不是生产模型回答级评估；相关性阈值切换 Embedding Profile 后必须重新校准并更新 Profile 绑定；本地文件系统和 PostgreSQL 不能组成单一原子事务。
 
 ## 开发记录
 

@@ -45,19 +45,27 @@ The deterministic boundary that applies document validity and role authorization
 _Avoid_: RAG answer, chat response
 
 **Search Result**:
-A ranked, authorized Document Chunk with a fused score, retrieval method, and Citation.
+A ranked, authorized Document Chunk with an RRF ordering score, raw keyword/vector relevance signals, retrieval method, and Citation.
 _Avoid_: Generated answer, source document
 
 **Citation**:
 Stable source metadata containing Document title, Document Version, Section, and Chunk ID for one Search Result.
 _Avoid_: URL, free-form source text
 
+**Source Binding**:
+The deterministic guarantee that every returned Citation is materialized from a Search Result admitted to the model Context. It does not prove that every answer sentence is entailed by that source.
+_Avoid_: Groundedness proof, factuality score
+
+**Relevance Policy**:
+A version-sensitive rule that admits Search Results using calibrated raw keyword and vector signals before model generation. RRF score is never used as an answerability threshold.
+_Avoid_: Rank cutoff, model confidence
+
 **Model Gateway**:
 The provider-neutral boundary for bounded structured generation, including model identity, Prompt version, timeout, attempts, and Token usage.
 _Avoid_: Raw SDK client, Prompt text
 
 **Grounded Answer**:
-A validated RAG response whose claims are constrained by the supplied enterprise Context and whose Citations are materialized from current authorized Search Results.
+A validated RAG response produced under an evidence-only Prompt whose Citations are source-bound to current authorized Search Results. Sentence-level entailment still requires evaluation.
 _Avoid_: Search Result, general model answer
 
 **Conversation**:
@@ -65,8 +73,12 @@ A stable multi-turn identity with one fixed local role and an ordered sequence o
 _Avoid_: Agent Run, HTTP request
 
 **Message**:
-A persisted user question or assistant answer. Assistant Messages own the retrieval query, retrieved Chunk IDs, model/Prompt/Token metadata, latency, request ID, and final response JSON for one turn.
+A persisted user question or assistant outcome. Assistant Messages own the retrieval query, retrieved Chunk IDs, model/Prompt/Token metadata, status, safe failure classification, latency, request ID, and optional final response JSON for one turn.
 _Avoid_: Document Chunk, transient model message
+
+**Turn Trace**:
+The persisted succeeded, refused, or failed outcome of one accepted chat request. A failed trace has a stable error stage/code and no final answer response.
+_Avoid_: Successful answer, Provider exception text
 
 **Visibility**:
 The retrieval access mode of a Document: public or role_restricted. A role_restricted Document is eligible only when the caller role is in allowed_roles.

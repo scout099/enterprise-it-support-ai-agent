@@ -9,6 +9,6 @@
 | 2 | PASS | 版本化知识导入、解析、Chunking 与文档 API |
 | 3 | PASS | Embedding Provider、pgvector 持久化、索引 API/CLI |
 | 4 | PASS | Retrieval-only：全文、向量、RRF、权限、Citation、Recall CLI |
-| 5 | PASS | 可信 RAG：ModelGateway、拒答、真实 Citation、Conversation、Chat API/CLI |
+| 5 | CONDITIONAL PASS（工程已通过，学习待验收） | 可信 RAG：ModelGateway、相关性拒答、Citation 来源绑定、完整 TurnTrace、Chat API/CLI |
 
 Phase 4 原计划中的自然语言 RAG 回答先按 2026-07-22 指令移出，随后项目所有者明确授权为 Phase 5。原请求识别及其后计划在 Backlog 中顺延为 Phase 6–13；未经项目所有者确认，不自动开始 Phase 6。

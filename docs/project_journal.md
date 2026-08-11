@@ -1283,3 +1283,71 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **Step 5.6：** migration、全量质量门禁、真实 CLI/API 和文档收尾。
 
 最终结论：Phase 5 的功能、失败路径、权限、持久化、测试、运行入口和文档满足本次范围；未进入请求分类或 Agent 工作流。建议 Commit 为 `feat(chat): add grounded RAG answers with citations`，建议 Tag 为 `phase-5-complete`，工程判断为 **PASS**。
+
+### Step 5.7：增加原始相关性信号、证据闸门与负样本评测
+
+- **所属 Phase：** Phase 5：可信 RAG 问答（严格审查 Blocking 修复）。
+- **完成日期：** 2026-07-22
+- **本步骤目标：** 修复 RRF 只代表排序、非空知识库中的无关向量近邻仍会触发回答的问题。
+- **实际完成内容：** `SearchResult` 分离保存 `rrf_score`、`keyword_score` 和 `vector_similarity`；新增配置化 `RelevancePolicy`，Fake Embedding Profile 只接受确定性关键词证据，真实 Embedding Profile 才允许使用配置化向量阈值；RAG 在构建 Context 前过滤证据，但审计轨迹仍保存全部原始检索 Chunk IDs；全文查询改为过滤常见问句词后的 any-term FTS，避免严格多词 AND 伤害正样本；评测集升级为 `phase-5-v1`，保留 15 个正样本并增加 3 个负样本，输出 Recall@3/5、false answer rate 和 abstention accuracy。
+- **新增或修改文件：** `knowledge/retrieval.py`、`agent_runtime/rag.py`、Search API schema/route、`platform/config.py`、`apps/dependencies.py`、API/CLI composition、retrieval dataset/evaluation/CLI、相关 unit/integration tests、`.env.example`。
+- **请求或数据流程：** authorized Retrieval → raw keyword/vector signals + RRF order → profile-aware RelevancePolicy → relevant complete evidence only → ModelGateway；全部检索 IDs → Conversation trace。
+- **关键代码入口：** `RelevancePolicy.select()`、`KnowledgeRetriever._fuse()`、`RAGAnswerService.ask()`、`evaluate_retrieval()`。
+- **为什么采用当前实现：** RRF 分数依赖候选排名，不能跨查询解释；Fake Embedding 是哈希向量，不能假装具有语义相关性；关键词与向量原始信号分别保留后，阈值可以随 Embedding Profile 通过版本化数据集校准。
+- **红绿验证：** 首轮 RAG 测试因缺少 `RelevancePolicy` 收集失败；首轮真实评测用未校准关键词阈值时 Recall@3 仅 `0.0667`，降阈值后仍为 `0.4667`，进一步修正 FTS 为安全 any-term 语义后达到要求；最终相关单元与 PostgreSQL 集成聚焦测试 `22 passed in 0.72s`。
+- **实际评测结果：** 18 cases；正样本 15、负样本 3；一次独立 CLI 快照为 Recall@3=`0.9333`、Recall@5=`1.0`、false_answer_rate=`0.0`、abstention_accuracy=`1.0`。Recall@3 的具体 miss 会受等分候选 UUID tie-break 影响，因此测试约束质量门槛而不硬编码不稳定 ID。
+- **当前限制：** `0.001` 关键词阈值只针对当前 `simple` FTS 演示基线；切换真实 Embedding model/version 前必须用代表性正负样本重新校准关键词与向量阈值。
+- **与下一步骤的关系：** 第一个 Blocking 已闭环；下一步修正 strict Structured Outputs Schema。
+
+### Step 5.8：修正 RAG strict Structured Outputs Schema
+
+- **所属 Phase：** Phase 5：可信 RAG 问答（严格审查 Blocking 修复）。
+- **完成日期：** 2026-07-22
+- **本步骤目标：** 保证发送给 OpenAI-compatible strict Structured Outputs 的 RAG 根 Schema 将全部业务字段声明为 required。
+- **实际完成内容：** 移除 `RAGModelOutput` 四个数组字段的 Pydantic 默认工厂；空数组仍是合法值，但必须由模型明确返回；新增 Gateway 契约测试，比较 JSON Schema 的 `required` 与 `properties` 全集并验证 `additionalProperties=false`。
+- **新增或修改文件：** `agent_runtime/rag.py`、`tests/unit/intelligence/test_model_gateway.py`、`docs/project_journal.md`。
+- **红绿验证：** 新测试先显示 `diagnosis/evidence_ids/limitations/next_steps` 未进入 required；最小修复后 ModelGateway + RAG 聚焦测试 `14 passed in 0.30s`。
+- **为什么采用当前实现：** strict Structured Outputs 要求所有字段必填；把“可为空”和“可省略”分开，避免宽松本地 stub 接受而真实服务端拒绝 Schema。
+- **当前限制：** 自动测试仍不访问付费 Provider；所选真实 endpoint/model 上的 smoke 必须由操作者显式授权并提供预算和非敏感测试 Context。
+- **与下一步骤的关系：** 第二个 Blocking 已闭环；下一步把成功回答与每次 Turn 调用轨迹分离，并持久化失败。
+
+### Step 5.9：分离 Grounded Answer 与 TurnTrace，并持久化失败尝试
+
+- **所属 Phase：** Phase 5：可信 RAG 问答（严格审查 Blocking 修复）。
+- **完成日期：** 2026-07-22
+- **本步骤目标：** 让每个已接受问答尝试都产生可审计轨迹，而不是只有成功回答或确定性拒答才保存。
+- **实际完成内容：** 新增 `TurnTrace`、`TurnStatus` 和 `ErrorStage`；Conversation Repository 改为接收统一 trace，并在同一事务保存用户问题与 succeeded/refused/failed assistant outcome；新增 migration `20260722_0006`，保存 status、error stage 和安全 error code，并用数据库约束保证成功/拒答必须有 response、失败必须无 response 且有错误分类；ModelGateway 异常携带 provider/configured/resolved model、Prompt、实际 attempts 和可用 Token usage；RAG 对 retrieval、timeout、provider unavailable、malformed schema 和 Citation 越界分别保存失败轨迹后再抛出原安全异常；Conversation GET 公开安全 outcome 字段但不保存 Provider 原始异常正文。
+- **新增或修改文件：** ModelGateway、RAG Service、conversation model/repository/schema/route、migration `0006`、ModelGateway/RAG/Repository/API/migration tests、`docs/project_journal.md`。
+- **请求或数据流程：** accepted question → retrieval/model/validation/citation → construct `TurnTrace` regardless of outcome → atomic user + assistant persistence → re-raise safe typed failure for HTTP 502/503 mapping。
+- **红绿验证：** Gateway 测试先以异常没有 metadata 的 `AttributeError` 红灯；RAG 测试先因缺少 Turn outcome seam 红灯；首次 PostgreSQL 失败写入因 JSONB 把 Python `None` 序列化为 JSON `null` 而违反 SQL `IS NULL` 约束，修正为 `JSONB(none_as_null=True)` 后转绿。
+- **测试结果：** Gateway attempts/usage、RAG 四类模型/校验失败、Repository failed outcome、0006 migration 和五类真实 API/数据库失败轨迹的聚焦回归 `60 passed in 2.39s`；API 仍返回安全 502/503，数据库只保存稳定 error code，不含测试中的 fictional secret detail。
+- **当前限制：** 如果 Conversation 数据库本身不可用，系统无法把数据库故障写回同一数据库；这是不可消除的单存储边界，需要外部日志/监控承接。失败 HTTP 响应仍只返回 request ID，不新增按 request ID 查询轨迹的公开接口。
+- **与下一步骤的关系：** 三个 Blocking 已全部形成代码与测试闭环；下一步只做安全/文档收口和完整质量门禁，不进入后续 Phase。
+
+### Step 5.10：完成 Blocking 修复后的全量验收与安全文档收口
+
+- **所属 Phase：** Phase 5：可信 RAG 问答（严格审查闭环）。
+- **完成日期：** 2026-07-22
+- **本步骤目标：** 用全量测试和真实数据库证明三个 Blocking 已关闭，并把项目声明收敛到代码实际保证。
+- **实际完成内容：** 建立 `17255bd chore: import current project snapshot` 诚实基线；执行全量 pytest、Ruff、compileall、pip check、migration 往返和 18-case 评测；更新 Glossary、README、Overview、Roadmap、Backlog、Current State 和 Phase 5 report；把“真实/合法 Citation”统一收敛为“Citation 来源绑定”，明确它不等于逐句蕴含；将产品明确标记为本地演示，记录自报 role、无 subject/tenant、Context 截断、GET 无分页和 SDK client 未统一关闭；README 与 `.env.example` 增加真实 Provider 会接收员工查询/企业 Context 的醒目数据提示。
+- **最终测试结果：** 全量 `131 passed in 4.07s`；Blocking 聚焦回归 `60 passed in 2.39s`；Ruff `All checks passed!`，`88 files already formatted`；compileall 成功；pip check 无损坏依赖；`git diff --check` 通过。
+- **数据库验证：** test DB migration `20260722_0006 → 20260722_0005 → 20260722_0006` 成功；开发库和测试库均为 `20260722_0006 (head)`。
+- **评测结果：** `phase-5-v1` 共 18 cases；Recall@3=`0.9333333333333333`、Recall@5=`1.0`、false_answer_rate=`0.0`、abstention_accuracy=`1.0`。
+- **安全结论：** 当前可以作为可重复的本地演示 MVP 提交；不能宣称生产认证、租户隔离或回答逐句事实验证。没有为了关闭文档问题而伪造 Principal/认证实现。
+- **与下一步骤的关系：** Phase 5 到此停止；未经用户明确确认，不进入 Phase 6。剩余 Important 保留在 Current State，不在本轮扩大范围。
+
+### Step 5.11：严格收尾验收、Profile 绑定与真实演示回归
+
+- **所属 Phase：** Phase 5：可信 RAG 问答（最终收尾；未进入 Phase 6）。
+- **完成日期：** 2026-07-23
+- **本步骤目标：** 按原始任务、验收标准、代码、安全、失败路径、实际演示和学习要求重新验收，只修复新发现的 Blocking 与必要 Important。
+- **审查结论：** 两条独立审查轴均未发现新的 Blocking，也未发现 Phase 6+ 提前实现。必要 Important 包括向量阈值未与具体 Embedding Profile 强绑定、FAR 名称可能被误读为回答级指标、Fake 演示固定使用 Context 第一项导致宽泛 VPN 问题命中同主题干扰文档，以及少量过时命名/说明。
+- **实际完成内容：** 增加 `IT_SUPPORT_RAG_VECTOR_THRESHOLD_PROFILE`，真实向量阈值必须精确绑定 `<model>:<dimension>:<version>`，不匹配时配置失败关闭；评测内部改用 `would_call_model` 并在 CLI 输出 `false_answer_rate_scope=relevance_gate_proxy`；版本化并复用确定性关键词提取；Context 携带 Retrieval 的 `keyword_score`，默认 Fake 按问题关键词重合度和 raw score 选择证据；修正过时测试名、模块说明和 RRF 变量名；README、Current State 与 Phase Report 同步真实能力和限制。
+- **红绿证据：** 新增“VPN Configuration SOP + VPN Security Notice”真实 PostgreSQL/API 回归；首次运行失败，实际返回 Security Notice；最小修复后 `1 passed`，宽泛 CLI 问题返回配置文档、`vpn.demo.invalid` 和由 Retrieval 物化的 E3 Citation。
+- **环境问题：** 第一次全量测试因 Docker Desktop 未运行而出现 `65 passed, 4 failed, 62 errors`，共同根因是本机 PostgreSQL `connection refused`，不是代码断言失败。启动 Docker Desktop 和仓库 Compose 服务后数据库 healthy，未跳过或弱化任何测试。
+- **运行与验证命令：** `docker compose ps/up -d`；test DB `alembic upgrade/current` 和 `0006 → 0005 → 0006`；`.venv/bin/python -m pytest -q`；`.venv/bin/ruff check .`；`.venv/bin/ruff format --check .`；compileall；pip check；`git diff --check`；`scripts.evaluate_retrieval --seed-fixtures`；两次 `scripts.chat`；五类失败轨迹专项 pytest。
+- **最终结果：** 全量 `133 passed in 4.34s`；Ruff `All checks passed!` 且 `88 files already formatted`；compileall 成功；pip check 无损坏依赖；migration head 为 `20260722_0006`；18-case Recall@3=`0.9333333333333333`、Recall@5=`1.0`、gate-proxy FAR=`0.0`、abstention accuracy=`1.0`；五类失败专项 `5 passed in 0.82s`。
+- **真实演示：** 正常场景 “How do I configure the company VPN?” 返回配置步骤和来源绑定 Citation；失败场景一“量子打印机政策”确定性拒答，模型 attempts/tokens 为 0；失败场景二覆盖 retrieval/timeout/Provider/malformed/citation，HTTP 为安全 502/503 且数据库保存 failed trace。
+- **当前边界：** `user_role` 仍自报且无 subject/tenant，只适合本地演示；Citation 不证明逐句蕴含；真实 Provider smoke 未经预算和数据授权未运行；Context 字符截断、GET 无分页和 SDK client 未统一关闭仍是延后项。
+- **学习状态：** 工程验收为 PASS；完整 Phase 结论在用户完成本次面试题与独立练习前为 CONDITIONAL PASS。建议 Commit：`fix(rag): close phase 5 acceptance gaps`；建议 Tag：完成学习验收后使用 `phase-5-complete`。
+- **与下一步骤的关系：** 本次停止在 Phase 5，不创建 Phase 6 功能；只有用户另行确认并完成学习验收后才讨论下一阶段。

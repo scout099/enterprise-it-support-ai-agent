@@ -15,7 +15,7 @@ Markdown/TXT/PDF
 → conversation/message trace
 ```
 
-当前完成到 Phase 5，已提供第一个带真实引用、无证据拒答和完整调用轨迹的企业 IT 知识问答 MVP。模块边界、完整愿景和架构理由分别见：
+当前完成到 Phase 5，已提供第一个带 Citation 来源绑定、相关性拒答和成功/拒答/失败调用轨迹的企业 IT 知识问答演示 MVP。模块边界、完整愿景和架构理由分别见：
 
 - `docs/CURRENT_STATE.md`：当前可运行事实；
 - `docs/ROADMAP.md`：阶段状态与后续边界；

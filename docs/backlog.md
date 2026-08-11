@@ -129,11 +129,13 @@
 - ModelGateway、Fake/OpenAI-compatible Adapter、超时/有限重试和调用元数据；
 - 有界 Context、结构化回答、无证据拒答和确定性 Citation；
 - conversations/messages、聊天 API、会话读取 API 和 CLI。
+- raw keyword/vector 相关性闸门，以及 succeeded/refused/failed Turn trace。
 
 ### 验收标准
 
 - VPN、Outlook、账号问题可返回真实 Retrieval Citation；
 - 无证据、malformed 输出和 Citation 越界安全结束；
+- 非空知识库无关问题拒答；失败 HTTP 保持安全且数据库存在失败轨迹；
 - 多轮、角色权限、模型/Prompt/Token/延迟/request ID 可持久化；
 - 测试不依赖真实模型 API。
 
