@@ -6,7 +6,7 @@
 
 Phase 12 已把旧 Backlog 的安全预验收和 Docker/作品集交付合并完成。FastAPI、Streamlit、PostgreSQL/pgvector 和一次性 migration 可由 Docker Compose 完整启动；发布收尾后本地 251 项测试、migration drift、零失败 30-case Evaluation、两个镜像、全新数据卷启动、幂等 seed、Gitleaks、dependency audit 和安全边界检查均实际通过。
 
-Phase 6–12 已收敛到经过脱敏的 Git history，并上传到私有 GitHub 仓库。发布分支 Draft PR #1 的 hosted run [`31494468543`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) 在 commit `6e7589e` 上 8/8 jobs success。没有剩余 Blocking 代码或托管门禁缺口；阶段仍为 CONDITIONAL PASS 的唯一原因是学习验收尚需由项目所有者独立完成。
+Phase 6–12 已收敛到经过脱敏的 Git history，并上传到私有 GitHub 仓库。Phase 12 PR #1 与 Dependabot 策略修复 PR #5 已合并；策略修复对应的 `main` run [`31496706696`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31496706696) 在 merge commit `d27fe8e` 上 8/8 jobs success。没有剩余 Blocking 代码或托管门禁缺口；阶段仍为 CONDITIONAL PASS 的唯一原因是学习验收尚需由项目所有者独立完成。
 
 ## 验收矩阵
 
@@ -31,7 +31,7 @@ Phase 6–12 已收敛到经过脱敏的 Git history，并上传到私有 GitHub
 | README 全主题 | 完成 | `README.md` | 命令、架构、边界与结果核对 |
 | interview/demo/resume | 完成 | 3 份独立文档 | 必需主题和数字核对 |
 | 删除无用/重复模块 | 完成 | 删除空 worker package | 引用/生成物/重复入口扫描 |
-| GitHub-hosted CI | 完成 | PR #1 / commit `6e7589e` | run `31494468543`，8/8 jobs success |
+| GitHub-hosted CI | 完成 | PR #1、PR #5、`main@d27fe8e` | run `31496706696`，8/8 jobs success |
 
 ## Docker 与迁移设计
 
@@ -80,6 +80,8 @@ Workflow 使用最小 `contents: read` 权限和同分支并发取消，包含�
 所有第三方 Actions 均固定到经 GitHub API 解析的完整 commit SHA，CI/Compose pgvector 固定镜像 digest；`.github/dependabot.yml` 按月为 pip、GitHub Actions 与 Docker 提交 grouped minor/patch PR。当前仍没有完整 hash lockfile 或镜像签名，这些限制没有被 dependency audit 夸大为生产供应链认证。
 
 私有仓库已启用 GitHub vulnerability alerts 和 automated security fixes；API 复核分别返回 204 与 `enabled=true, paused=false`。这些平台能力补充而不替代仓库内的 `pip-audit`、Gitleaks 和 Dependabot 配置。
+
+首次 Dependabot Docker job 因 directory `/` 不含 Dockerfile 而失败；真实 Dockerfiles 位于 `/docker`。配置修正后，Docker run `31496712533`、pip run `31496712575`、GitHub Actions run `31496712820` 全部 success。三类配置显式忽略 semver-major；错误策略产生的 major PR 已关闭。平台另提出 Python 3.14 runtime PR #6，但未自动合并，当前验收基线仍为 Python 3.12。
 
 第一次 hosted run `31494076726` 暴露两类只在 runner 上出现的问题：四个项目安装 job 使用 `--no-build-isolation`，但 runner 尚无 setuptools build backend；Gitleaks Action 在最小只读 token 下尝试访问不允许的 PR 资源。修复后项目安装恢复 PEP 517 隔离构建；Secrets job 改为直接下载固定 Gitleaks v8.30.1 Linux x64 包、校验官方 SHA-256 后扫描 Git history 和 worktree，不申请评论或写权限。第二次 hosted run `31494468543` 的全部 8 个 jobs 成功。
 
@@ -180,7 +182,7 @@ Phase 12 工程结论为 **PASS**，总体为 **CONDITIONAL PASS**。唯一条�
 | 级别 | 问题 | 处理结果 | 证据 |
 | --- | --- | --- | --- |
 | Blocking | Evaluation CI 在全新数据库上未先运行 migration | 已修复 | `.github/workflows/ci.yml` 的 Evaluation job；隔离 Compose Evaluation Gate PASS |
-| Blocking（外部证据） | 2026-08-05 检查时尚无 GitHub-hosted run | 当时如实保留；2026-08-11 由 run `31494468543` 8/8 success 关闭 | PR #1 hosted CI |
+| Blocking（外部证据） | 2026-08-05 检查时尚无 GitHub-hosted run | 当时如实保留；2026-08-11 由 PR 与 main 多轮 8/8 success 关闭 | 当前 main run `31496706696` |
 | Important | `pyproject.toml` 误写 `httpx2`，容器依赖传递安装 | 已修复为 direct runtime `httpx` | 干净 API/UI image build 日志直接安装 `httpx-0.28.1`；`pip check` PASS |
 | Important | Alembic 对 migration-owned FTS index 的排除可能掩盖漂移 | 已补显式 contract verification 与 3 个失败路径单测 | `scripts/run_migrations.py`、`tests/unit/test_run_migrations.py` |
 | Important | README/状态/报告中的提交数、测试数与当前事实过期 | 已同步 | README、Current State、Project Overview、resume bullets、本报告 |

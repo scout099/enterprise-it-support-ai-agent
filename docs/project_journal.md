@@ -2264,4 +2264,6 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **完成日期：** 2026-08-11
 - **实际发现：** Phase 12 PR 合并后，main CI run `31495296148` 8/8 success；随后平台首次执行三类 Dependabot 更新。pip 与 GitHub Actions job 成功，但 Docker job `31495301140` 因配置目录 `/` 下没有 Dockerfile 而以 `dependency_file_not_found` 失败，实际 Dockerfiles 位于 `/docker`。同时 GitHub Actions 和 pip 产生了 3 个 major-bound PR，证明 `groups.update-types` 只决定分组，不会禁止未分组的 major update，与文档所述“只提出 minor/patch”不一致。
 - **必要修复：** Docker ecosystem directory 改为 `/docker`；pip、GitHub Actions 和 Docker 三类均显式 ignore `version-update:semver-major`，保留 monthly、minor/patch group 和每类最多 5 个开放 PR。不会自动合并已产生的 major PR；待配置进入 main 后关闭这些不符合当前策略的 bot PR。
-- **验证状态：** YAML 解析、Ruff、security boundary、Git whitespace 和 hosted CI 将按同一发布门禁重跑；Docker Dependabot 的下一次平台运行结果在本步骤后续补充，不用静态配置代替托管证据。
+- **最终验证：** YAML 解析、Ruff、format、security boundary 和 Git whitespace 通过；PR #5 run `31496501929` 8/8 success 后合并。当前 main run [`31496706696`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31496706696) 在 merge commit `d27fe8e` 上 8/8 success；Docker Dependabot `31496712533`、pip `31496712575`、GitHub Actions `31496712820` 均 success，Docker job 名称明确为 `docker in /docker`。
+- **PR 清理与边界：** 旧 GitHub Actions major PR 由新策略自动关闭；残留 ReportLab major-range PR #4 人工关闭并说明 major 升级必须独立评审。新策略提出 Python 3.14 runtime PR #6，符合 Docker semver-minor 规则但没有自动合并；保留为后续独立维护建议，不改变 Phase 12 的 Python 3.12 已验收基线，也不在本轮扩展升级范围。
+- **阶段结论：** Dependabot 持续更新门禁的真实平台失败已关闭；Phase 12 工程 PASS，整体仍仅因学习验收为 CONDITIONAL PASS。仓库保持 private、无 Tag，不进入下一 Phase。

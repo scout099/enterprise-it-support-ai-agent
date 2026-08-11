@@ -4,7 +4,7 @@
 - **当前完成阶段：** Phase 12：部署、CI、安全检查和作品集包装
 - **阶段结论：** CONDITIONAL PASS（本地与 GitHub-hosted 工程门禁 PASS；仅学习验收待项目所有者完成）
 - **数据库 Head：** `20260801_0013`
-- **Git 状态：** 私有 GitHub 仓库已建立；`agent/phase-12-release` 已 push，并由 Draft PR #1 承载 Phase 12 发布收尾
+- **Git 状态：** 私有 GitHub 仓库已建立；Phase 12 PR #1 与 Dependabot 策略修复 PR #5 已合并到 `main`
 
 ## 当前可运行能力
 
@@ -29,11 +29,12 @@
 - Gitleaks v8.30.1 官方包 SHA-256 `b40ab0…aeb6a5` 校验通过；精确 allowlist 后，最终工作区约 6.53 MB 与当前完整 Git history 均 `no leaks found`；仓库安全脚本也通过；
 - Prompt Injection 聚焦测试、上传 MIME/大小测试和越权/审批/审计聚焦集均通过；完整行为由 251 项全量回归覆盖；
 - 实际 HTTP 演示通过 VPN Citation、Outlook 四个 Mock Tool、R1 确认建单、Audit 和 Dashboard；失败场景验证错误 actor 确认 403、employee 读取 Analytics 403、伪装 PDF 上传 415。
-- GitHub-hosted PR run [`31494468543`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) 在 commit `6e7589e` 上 success；Python dependency audit、migration、Gitleaks、Evaluation、Ruff/package、pytest + PostgreSQL/pgvector、FastAPI build、Streamlit build 共 8/8 jobs 通过。
+- Dependabot 策略修复合并后的 `main` run [`31496706696`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31496706696) 在 merge commit `d27fe8e` 上 success；Python dependency audit、migration、Gitleaks、Evaluation、Ruff/package、pytest + PostgreSQL/pgvector、FastAPI build、Streamlit build 共 8/8 jobs 通过；pip、GitHub Actions、Docker 三类 Dependabot hosted updates 也全部 success。
 
 ## 已知限制
 
 - GitHub 仓库当前为 private，尚未执行公开可见性切换；公开前仍需项目所有者确认，并应再核对仓库页面、描述和展示素材；
+- Dependabot 产生的 Python 3.14 runtime 更新 PR #6 保持开放且未自动合并；它是后续独立评审项，不改变当前 Python 3.12 已验收基线；
 - 当前依赖使用受 major version 约束而非完整 hash lockfile；本轮 Python 3.12 镜像从干净环境解析、构建和 smoke 通过，并由 pinned audit tool + Dependabot 管理当前风险，但生产可复现发布仍需正式锁定策略；
 - 没有生产 SSO、可信 Principal、tenant isolation、真实企业 Adapter、secret manager、TLS、高可用、供应链签名或漏洞认证；本地 actor/role 仍是 Demo 输入；
 - R3 只产生模拟结果；Approval decision 与 graph resume 仍非单一事务；本地文件与 PostgreSQL 也不是单一原子事务；
