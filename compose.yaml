@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:0.8.2-pg17-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-it_support}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-only}
+      POSTGRES_DB: ${POSTGRES_DB:-enterprise_it_support}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgres/init-test-database.sh:/docker-entrypoint-initdb.d/10-init-test-database.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  postgres_data:

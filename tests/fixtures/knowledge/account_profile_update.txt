@@ -1,0 +1,3 @@
+Account Profile Update Guide
+
+Employees can update their account display name and office location through the HR profile portal. This guide does not cover password reset, locked accounts, verification prompts, or training error codes.

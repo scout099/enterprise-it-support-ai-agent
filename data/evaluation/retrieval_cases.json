@@ -1,0 +1,20 @@
+{
+  "version": "phase-4-v2",
+  "cases": [
+    {"id": "vpn-01", "query": "VPN server address", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
+    {"id": "vpn-02", "query": "VPN connection times out", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
+    {"id": "vpn-03", "query": "VPN device clock retry", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
+    {"id": "vpn-04", "query": "VPN corporate profile Connect", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
+    {"id": "vpn-05", "query": "VPN three failed attempts", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation VPN Configuration SOP"},
+    {"id": "outlook-01", "query": "Outlook mail service status", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Outlook Mail Troubleshooting SOP"},
+    {"id": "outlook-02", "query": "Outlook Junk Email", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Outlook Mail Troubleshooting SOP"},
+    {"id": "outlook-03", "query": "Outlook mailbox quota", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Outlook Mail Troubleshooting SOP"},
+    {"id": "outlook-04", "query": "Outlook Archive deleted items", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Outlook Mail Troubleshooting SOP"},
+    {"id": "outlook-05", "query": "Outlook incident reference", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Outlook Mail Troubleshooting SOP"},
+    {"id": "account-01", "query": "Account forgotten password reset", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
+    {"id": "account-02", "query": "Account temporarily locked", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
+    {"id": "account-03", "query": "Account verification prompts", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
+    {"id": "account-04", "query": "Account local IT queue", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"},
+    {"id": "account-05", "query": "Account training error code", "expected_source_name": "Retrieval Evaluation Library", "expected_document_title": "Evaluation Account Common Questions FAQ"}
+  ]
+}

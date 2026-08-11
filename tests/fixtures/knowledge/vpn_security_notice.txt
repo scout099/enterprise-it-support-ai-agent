@@ -1,0 +1,3 @@
+VPN Security Notice
+
+Never approve an unexpected sign-in prompt while connecting to VPN. Report suspicious VPN requests to the security desk. This notice does not contain VPN server addresses or connection troubleshooting steps.

@@ -1,0 +1,12 @@
+Outlook Mail Delivery Troubleshooting SOP
+
+This fictional procedure helps a demo employee investigate missing email.
+
+Check service status
+Confirm that the demonstration mail service status page shows normal operation. Record the displayed incident reference if service is degraded.
+
+Check mailbox folders
+Review Inbox, Junk Email, Archive, and deleted items. Confirm that no fictional training rule moved the message to another folder.
+
+Check mailbox quota
+Open mailbox settings and confirm that the demo mailbox is below its storage quota. Escalate to the local IT queue when the quota display is unavailable.

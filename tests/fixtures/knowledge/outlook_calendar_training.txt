@@ -1,0 +1,3 @@
+Outlook Calendar Training
+
+Use the Outlook calendar scheduling assistant to compare attendee availability and reserve a meeting room. This training guide does not cover mail delivery, junk email, mailbox quota, or deleted messages.
