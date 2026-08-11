@@ -299,7 +299,7 @@ IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_evaluations
 - Gitleaks secret scan；
 - FastAPI 与 Streamlit Docker build。
 
-Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 Compose 健康链路、安全 migration、30-case Evaluation、依赖漏洞和 secret scan 均已实际运行；完整证据记录在 [`docs/phase_reports/phase_12.md`](docs/phase_reports/phase_12.md)。GitHub-hosted [CI run 31494468543](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) 的 8 个 jobs 全部通过，覆盖同一组质量、数据库、评估、安全和镜像门禁。
+Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 Compose 健康链路、安全 migration、30-case Evaluation、依赖漏洞和 secret scan 均已实际运行；完整证据记录在 [`docs/phase_reports/phase_12.md`](docs/phase_reports/phase_12.md)。Dependabot 策略修复合并后的 `main` GitHub-hosted [CI run 31496706696](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31496706696) 8/8 通过，覆盖同一组质量、数据库、评估、安全和镜像门禁。
 
 ## 安全边界
 
@@ -324,7 +324,7 @@ Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 
 - FastAPI/Streamlit 镜像从干净依赖环境构建成功；隔离 Compose 项目中 db/api/ui healthy、首次 migration exited 0，重复 migration no-op，seed 连续两次计数一致；
 - Gitleaks 工作区与完整 Git history 均未发现泄漏；`pip-audit` 未发现当前解析依赖的已知漏洞；
 - Streamlit Chat/Dashboard、幂等 seed、R1 确认建单和 R3 模拟审批已有真实本地演示证据。
-- GitHub-hosted CI 已在发布分支的 PR 上 8/8 通过；仓库当前保持 private，改为公开仍需项目所有者明确确认。
+- Phase 12 PR #1 与 Dependabot 策略修复 PR #5 已合并；对应 `main` hosted CI 8/8 通过。仓库保持 private，改为公开仍需项目所有者明确确认。
 
 这些数字来自固定虚构数据和本机/CI 环境，不代表生产 SLA、真实员工满意度或真实企业准确率。
 
