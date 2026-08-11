@@ -2,9 +2,9 @@
 
 ## 结论
 
-**CONDITIONAL PASS（本地工程门禁 PASS；GitHub-hosted CI 需在提交/推送后确认）。**
+**CONDITIONAL PASS（工程修复与本地门禁 PASS；需完成学习验收，并在 push 后确认 GitHub-hosted CI）。**
 
-Phase 12 已把旧 Backlog 的安全预验收和 Docker/作品集交付合并完成。FastAPI、Streamlit、PostgreSQL/pgvector 和一次性 migration 可由 Docker Compose 完整启动；本地 245 项测试、migration drift、30-case Evaluation、两个镜像、健康检查、幂等 seed、Gitleaks 和安全边界检查均实际通过。
+Phase 12 已把旧 Backlog 的安全预验收和 Docker/作品集交付合并完成。FastAPI、Streamlit、PostgreSQL/pgvector 和一次性 migration 可由 Docker Compose 完整启动；发布收尾后本地 251 项测试、migration drift、零失败 30-case Evaluation、两个镜像、全新数据卷启动、幂等 seed、Gitleaks、dependency audit 和安全边界检查均实际通过。
 
 Phase 6–12 已收敛到本地阶段提交，但当前没有 push，因而没有 GitHub-hosted workflow run。仓库内 CI 配置和每个对应命令已在本机验证，但不能把这种证据写成“远端 CI 已绿”。除这个外部门禁外，没有剩余 Blocking 代码缺口。
 
@@ -14,12 +14,13 @@ Phase 6–12 已收敛到本地阶段提交，但当前没有 push，因而没�
 | --- | --- | --- | --- |
 | FastAPI Dockerfile | 完成 | `docker/Dockerfile.api` | image build 成功，API healthy |
 | Streamlit Dockerfile | 完成 | `docker/Dockerfile.streamlit` | image build 成功，UI healthy |
-| PostgreSQL + pgvector | 完成 | `pgvector/pgvector:0.8.2-pg17-bookworm` | db healthy，真实测试通过 |
+| PostgreSQL + pgvector | 完成 | 固定 `pgvector/pgvector:0.8.2-pg17-bookworm` digest | db healthy，真实测试通过 |
 | Compose 一键启动 | 完成 | `compose.yaml` | db/api/ui healthy，migrate exited 0 |
-| 安全自动 migration | 完成 | `scripts/run_migrations.py` | 连续执行两次均 no-op；单一 head/drift 通过 |
+| 安全自动 migration | 完成 | `scripts/run_migrations.py` | 全新库升级、重复 no-op、单一 head/drift、显式 FTS index contract 均通过 |
 | Ruff/pytest/migration CI | 完成 | `.github/workflows/ci.yml` | 对应本地命令通过 |
-| Evaluation regression CI | 完成 | Fake 30-case job | Gate PASS |
+| Evaluation regression CI | 完成 | Fake 30-case job，先迁移隔离数据库 | Gate PASS |
 | secrets scan CI | 完成 | Gitleaks Action + `.gitleaks.toml` | worktree/history 均 0 leak |
+| dependency audit/update | 完成 | pinned `pip-audit` job + Dependabot | 当前解析依赖 0 known vulnerability |
 | Docker build CI | 完成 | FastAPI/Streamlit matrix | 两个镜像本机构建成功 |
 | `.env` / API Key 检查 | 完成 | `.gitignore` + security script | tracked/unignored scan + Gitleaks 通过 |
 | 禁止任意代码工具 | 完成 | Registry/Gateway + AST gate | injection 零工具调用；AST scan 通过 |
@@ -30,7 +31,7 @@ Phase 6–12 已收敛到本地阶段提交，但当前没有 push，因而没�
 | README 全主题 | 完成 | `README.md` | 命令、架构、边界与结果核对 |
 | interview/demo/resume | 完成 | 3 份独立文档 | 必需主题和数字核对 |
 | 删除无用/重复模块 | 完成 | 删除空 worker package | 引用/生成物/重复入口扫描 |
-| GitHub-hosted CI | 待外部确认 | workflow 已就绪 | 未 commit/push，无远端 run |
+| GitHub-hosted CI | 待外部确认 | workflow 已就绪 | 本地已有阶段提交但未 push，无远端 run |
 
 ## Docker 与迁移设计
 
@@ -47,13 +48,13 @@ db: PostgreSQL 17 + pgvector
 - 主机端口只绑定 `127.0.0.1`；知识文件和 Evaluation artifact 使用命名卷；
 - Compose 默认使用 Fake Model/Fake Embedding 和本机占位数据库凭证；不需要真实 API Key；
 - migration 是独立 one-shot service，不嵌入 Uvicorn/Streamlit worker；
-- 自动迁移前读取 Alembic heads，要求恰好一个 head；已在 head 时直接退出；否则只允许 `upgrade head`，结束后再次核对；
+- 自动迁移前读取 Alembic heads，要求恰好一个 head；已在 head 时 no-op；否则只允许 `upgrade head`，结束后再次核对；两条路径都核验 Alembic 无法稳定 round-trip 的 FTS GIN 表达式索引；
 - 不提供自动 downgrade、drop、reset、volume 删除或 seed；演示 seed 必须由用户显式运行。
 
 实际验证：
 
-- FastAPI、Streamlit、migrate 三个本地镜像均 build 成功；
-- `docker compose ps -a`：db/api/ui healthy，migrate exited 0；
+- 最终发布验收使用独立项目 `itagent_phase12_release` 和全新命名卷，从零 build FastAPI、Streamlit、migrate 三个镜像；
+- 首次迁移日志为 `database migrated to Alembic head 20260801_0013`；`docker compose ps` 显示 db/api/ui healthy，migrate exited 0；
 - `/health` 返回 ok，`/ready` 返回 database ok，Streamlit health 返回 ok；
 - API/UI `id -u` 均为 `10001`；
 - `docker compose run --rm migrate` 输出 `database already at Alembic head 20260801_0013`；
@@ -67,13 +68,16 @@ db: PostgreSQL 17 + pgvector
 Workflow 使用最小 `contents: read` 权限和同分支并发取消，包含：
 
 1. Quality：Ruff lint/format、compileall、pip check、仓库安全边界；
-2. Tests：PostgreSQL 17 + pgvector service、隔离 test database、全部 pytest；
-3. Migrations：安全迁移两次、`alembic check`；
-4. Evaluation：Fake Provider 30-case Gate；
-5. Secrets：完整 Git history Gitleaks；
-6. Docker：FastAPI/Streamlit 两镜像 matrix build，不 push。
+2. Dependencies：固定 `pip-audit==2.10.1`，按项目定义隔离解析并 strict 扫描；
+3. Tests：PostgreSQL 17 + pgvector service、隔离 test database、全部 pytest；
+4. Migrations：安全迁移两次、`alembic check`；
+5. Evaluation：先迁移该 job 的隔离数据库，再运行 Fake Provider 30-case Gate；
+6. Secrets：完整 Git history Gitleaks；
+7. Docker：FastAPI/Streamlit 两镜像 matrix build，不 push。
 
-最终验证中曾把 `IT_SUPPORT_ENVIRONMENT=test` 设为整个 pytest 进程，导致 10 个专门验证 development 配置的单元测试被全局环境污染，结果为 `10 failed, 235 passed`。修复后只在 migrations/evaluation jobs 显式设置 test environment，pytest job 使用测试自身的 fixture/environment seam；标准命令恢复为 `245 passed`。这证明 CI 环境变量也属于待测试配置，不能假设“test”全局覆盖总是安全。
+最终验证中曾把 `IT_SUPPORT_ENVIRONMENT=test` 设为整个 pytest 进程，导致 10 个专门验证 development 配置的单元测试被全局环境污染，结果为 `10 failed, 235 passed`。修复后只在 migrations/evaluation jobs 显式设置 test environment，pytest job 使用测试自身的 fixture/environment seam；当时标准命令恢复为 `245 passed`。随后增加 3 个 migration contract 与 3 个 Fake RAG 证据充分性单测，当前为 `251 passed`。这证明 CI 环境变量和离线替身行为都必须进入回归，不能假设“test”全局覆盖或“检索到文档”就代表问题可回答。
+
+所有第三方 Actions 均固定到经 GitHub API 解析的完整 commit SHA，CI/Compose pgvector 固定镜像 digest；`.github/dependabot.yml` 按月为 pip、GitHub Actions 与 Docker 提交 grouped minor/patch PR。当前仍没有完整 hash lockfile 或镜像签名，这些限制没有被 dependency audit 夸大为生产供应链认证。
 
 Workflow YAML 已解析；本地没有 `actionlint` 或 `act`，且尚未 push，因此 GitHub runner 的 action schema 与供应链下载仍需首次 hosted run 最终确认。
 
@@ -85,7 +89,7 @@ Workflow YAML 已解析；本地没有 `actionlint` 或 `act`，且尚未 push�
 - `scripts.check_security_boundaries` 扫描 tracked 和未忽略候选文件，拒绝 `.env`、private key 与高置信 OpenAI/AWS/GitHub/Google key 形状；
 - Gitleaks v8.30.1 Darwin arm64 tarball 的 SHA-256 与官方 checksum `b40ab0...aeb6a5` 一致；
 - 首轮 worktree 扫描的 5 个候选是 `.venv` 第三方 source map 和 3 条测试幂等值；最终配置只精确排除 `.venv` 路径和这 3 个显式非密钥值，没有禁用 generic rule；
-- 最终文档同步后的 worktree 扫描约 6.17 MB、3 个 Git commits 扫描约 637 KB，均 `no leaks found`。
+- 发布提交前的 worktree 扫描约 6.53 MB、当时完整 4-commit Git history 约 1.59 MB，均 `no leaks found`；提交后还必须再次扫描新增历史再 push。
 
 正则扫描不能证明“没有任何真实公司数据”。本轮还人工核对了演示 actor、文档 owner、工单、截图和报告语义，均按虚构/Mock 描述；公开前仍应由项目所有者再做一次人工内容审查。
 
@@ -110,7 +114,7 @@ Workflow YAML 已解析；本地没有 `actionlint` 或 `act`，且尚未 push�
 - `README.md`：背景、业务问题、功能、Mermaid 架构、技术栈、目录、启动、Demo、RAG、Agent、Tool Gateway、Policy/审批、Evaluation、结果、限制和未来规划；
 - `docs/interview_guide.md`：3 分钟介绍、RAG/Agent 顺序、State/Node/Edge、Tool/observation、LLM/确定性边界、幂等、权限、Evaluation、技术难点和 Codex 协作责任；
 - `docs/demo_script.md`：5 分钟 VPN → Outlook → Mock tools → R1 确认 → Ticket/Audit → Dashboard → Evaluation；
-- `docs/resume_bullets.md`：AI 应用、AI 产品、数据分析各 3 条，数字仅引用 13 migrations、7 Mock tools、30 cases、245 tests 和真实本地 Gate；
+- `docs/resume_bullets.md`：AI 应用、AI 产品、数据分析各 3 条，数字仅引用 13 migrations、7 Mock tools、30 cases、251 tests 和真实本地 Gate；
 - 文档明确不声称真实 SSO、Microsoft/ServiceNow/Jira 接入、生产业务提升、生产 SLA 或真实审批执行。
 
 ## 清理结果
@@ -122,29 +126,30 @@ Workflow YAML 已解析；本地没有 `actionlint` 或 `act`，且尚未 push�
 
 ## 最终测试与评估
 
-- 全量：`245 passed in 17.98s`；
-- Ruff：`All checks passed!`；format：`170 files already formatted`；
+- 全量：`251 passed in 17.31s`；
+- Ruff：`All checks passed!`；format：`172 files already formatted`；
 - compileall、pip check、security boundary、Git whitespace：通过；
 - migration 两次 no-op；`alembic check`：`No new upgrade operations detected.`；
-- Evaluation run：`eval-20260805T141357Z-046e52d7`，Gate PASS；
-- Recall@3/5：`1.0000 / 1.0000`；MRR：`0.8333`；
+- `pip-audit`：`No known vulnerabilities found`；
+- Evaluation run：`eval-20260811T125222Z-6a3c661e`，Gate PASS，failed cases `[]`；
+- Recall@3/5：`1.0000 / 1.0000`；MRR：`0.9167`；
 - Citation Validity：`1.0000`；Evidence Coverage：`1.0000`；Unsupported Claim Rate：`0.0000`；
-- Refusal Correctness：`0.7778`，失败 `knowledge-07`、`knowledge-08`；
+- Refusal Correctness：`1.0000`；
 - Intent、Tool Selection、Tool Arguments、Workflow：`1.0000`；Prohibited Action Rate：`0.0000`；Tool Error Rate：`0.0000`；
-- previous run 因 `knowledge_corpus_fingerprint_changed` 为 not comparable；没有报告虚假 delta。
+- previous run 与当前 dataset/corpus 可比较；没有用改变数据集或阈值制造 PASS。
 
 本地评估第一次仍加载旧 site-packages 并访问迁移前 fixture 路径。重新执行 `.venv/bin/python -m pip install --no-build-isolation .` 后使用当前代码，CLI Gate PASS。README 的本地安装步骤已包含安装当前包；开发者改动安装态源码后也应先重装再做 composition-root/CLI smoke。
 
 ## 已知限制
 
-- GitHub-hosted CI 未运行；只有提交/推送后才能确认 runner/action 行为；
-- Python 依赖是 major-bounded ranges，不是完整 lockfile；本轮 Python 3.12 干净镜像构建成功，但长期发布仍需受控更新；
+- GitHub-hosted CI 未运行；只有 push 后才能确认 runner/action 行为；
+- Python 依赖是 major-bounded ranges，不是完整 hash lockfile；本轮干净镜像、dependency audit 与 Dependabot 通过，但生产发布仍需正式锁定；
 - Compose 是 localhost Demo，不包含 TLS、生产 secret manager、高可用、集群 migration lock、镜像签名或漏洞认证；
 - 本地 actor/role 不是 SSO/可信 Principal，没有 tenant isolation；
 - 所有企业工具是 Mock，本地工单不是 ServiceNow/Jira；R3 结果是 simulated only；
 - Approval decision/resume 和文件/数据库边界仍存在非原子窗口；
 - PDF 无 OCR，pgvector exact scan，Evaluation 只有 30 条虚构案例；
-- Refusal Correctness 不是 1.0，groundedness 仍是有限词法检查；
+- Refusal Correctness 已在固定 Fake 评估集达到 1.0，但 groundedness 仍是有限词法检查，不能代表真实 Provider 或生产问题分布；
 - Phase 6–12 的跨 Phase 工作区已按项目所有者要求收敛为一个本地阶段提交；尚未 push 或 tag。
 
 ## 必须能解释的核心点
@@ -160,7 +165,49 @@ Workflow YAML 已解析；本地没有 `actionlint` 或 `act`，且尚未 push�
 
 ## 建议版本
 
-- 实际阶段提交：`feat(delivery): complete phases 6-12`
-- 建议 Tag：GitHub-hosted CI 通过后使用 `phase-12-complete`
+- 已有阶段提交：`feat(delivery): complete phases 6-12`
+- 本轮建议 Commit：`fix(delivery): close phase 12 acceptance gaps`
+- 建议 Tag：学习验收完成且 GitHub-hosted CI 通过后使用 `phase-12-complete`
 
-Phase 12 仓库内工程结论为 **PASS**，总体为 **CONDITIONAL PASS**，唯一外部条件是首次 GitHub-hosted CI。根目录 `AGENTS.md` 已建立并纳入阶段提交。本次到此停止，不自动开始新的 Phase。
+Phase 12 仓库内工程结论为 **PASS**，总体为 **CONDITIONAL PASS**。条件是项目所有者完成本轮给出的学习任务，并在 push 后确认首次 GitHub-hosted CI 全绿。根目录 `AGENTS.md` 已建立并纳入阶段提交；本轮修复未擅自 commit、push 或 tag。本次到此停止，不自动开始新的 Phase。
+
+## 2026-08-05 收尾验收补充
+
+### 审查问题与处理
+
+| 级别 | 问题 | 处理结果 | 证据 |
+| --- | --- | --- | --- |
+| Blocking | Evaluation CI 在全新数据库上未先运行 migration | 已修复 | `.github/workflows/ci.yml` 的 Evaluation job；隔离 Compose Evaluation Gate PASS |
+| Blocking（外部证据） | GitHub-hosted workflow 尚无实际 run | 未伪造通过；保留为阶段条件 | Git history 有本地提交但没有 push/run |
+| Important | `pyproject.toml` 误写 `httpx2`，容器依赖传递安装 | 已修复为 direct runtime `httpx` | 干净 API/UI image build 日志直接安装 `httpx-0.28.1`；`pip check` PASS |
+| Important | Alembic 对 migration-owned FTS index 的排除可能掩盖漂移 | 已补显式 contract verification 与 3 个失败路径单测 | `scripts/run_migrations.py`、`tests/unit/test_run_migrations.py` |
+| Important | README/状态/报告中的提交数、测试数与当前事实过期 | 已同步 | README、Current State、Project Overview、resume bullets、本报告 |
+| Optional | Streamlit 镜像安装完整后端依赖 | 未处理 | 不影响正确性或安全，属于后续体积优化 |
+
+没有发现后续 Phase 功能提前实现、真实企业 Adapter、任意 Shell/Python/SQL Tool 或第二套重复授权系统。保留 Retrieval-only 和 Agent Evaluation 两个入口，因为它们评估层级不同，不是重复模块。
+
+### 实际演示结果
+
+- 正常：VPN knowledge question `completed` 且 1 个 Citation；Outlook diagnosis `completed` 并执行 4 个 allowlisted Mock tools；R1 工单由原 actor 确认后 `executed`；Audit 非空；Analytics 返回 200；
+- 失败一：其他 employee 确认同一 pending action → 403 `confirmation_access_denied`；
+- 失败二：employee 读取 Analytics → 403 `analytics_access_denied`；
+- 失败三：`.pdf` 文件名配 `text/plain` → 415 `unsupported_document_media_type`。
+
+### 最终证据命令
+
+```bash
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
+.venv/bin/python -m compileall -q apps src scripts migrations tests
+.venv/bin/python -m pip check
+.venv/bin/python -m scripts.check_security_boundaries
+.venv/bin/python -m pytest -q
+IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_migrations
+IT_SUPPORT_ENVIRONMENT=test .venv/bin/alembic check
+docker compose -p itagent_phase12_release up --build -d --wait
+docker compose -p itagent_phase12_release run --rm migrate
+docker compose -p itagent_phase12_release exec api python -m scripts.seed_phase11_demo
+docker compose -p itagent_phase12_release exec api python -m scripts.run_evaluations
+/private/tmp/gitleaks-v8.30.1/gitleaks git --no-banner --redact --config .gitleaks.toml .
+/private/tmp/gitleaks-v8.30.1/gitleaks dir --no-banner --redact --config .gitleaks.toml .
+```

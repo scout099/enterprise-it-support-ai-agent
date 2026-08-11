@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     model_max_attempts: int = Field(default=2, ge=1, le=5)
     model_max_output_tokens: int = Field(default=1200, ge=1, le=16000)
-    rag_top_k: int = Field(default=5, ge=1, le=20)
+    rag_top_k: int = Field(default=8, ge=1, le=20)
     rag_max_context_chars: int = Field(default=12000, ge=1000, le=100000)
     rag_min_keyword_score: float = Field(default=0.001, ge=0)
     rag_min_vector_similarity: float = Field(default=0.75, ge=-1, le=1)

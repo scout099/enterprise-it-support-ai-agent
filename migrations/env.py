@@ -24,7 +24,9 @@ _LANGGRAPH_CHECKPOINT_TABLES = frozenset(
         "checkpoints",
     }
 )
-_EXPLICIT_MIGRATION_INDEXES = frozenset({"ix_document_chunks_fts"})
+# SQLAlchemy/Alembic cannot reliably round-trip this PostgreSQL expression index.
+# It remains migration-owned and is verified explicitly by scripts.run_migrations.
+_EXPLICITLY_VERIFIED_INDEXES = frozenset({"ix_document_chunks_fts"})
 
 
 def include_managed_object(
@@ -37,7 +39,7 @@ def include_managed_object(
     """Limit autogenerate checks to schema objects owned by project metadata."""
     if type_ == "table" and name in _LANGGRAPH_CHECKPOINT_TABLES:
         return False
-    if type_ == "index" and name in _EXPLICIT_MIGRATION_INDEXES:
+    if type_ == "index" and name in _EXPLICITLY_VERIFIED_INDEXES:
         return False
     return True
 

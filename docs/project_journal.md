@@ -2162,3 +2162,86 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **Git 策略：** 由于 Phase 6–12 修改跨越相同 composition root、配置、README、Roadmap、Context 和 journal，无法从最终工作区可靠重建七个互不重叠的历史 diff；按项目所有者本次明确要求使用一个诚实的阶段收尾提交 `feat(delivery): complete phases 6-12`，不伪造逐 Phase commit。提交前重新检查完整 status、whitespace、安全边界和 secret scan；不 push、不 tag。
 - **最终状态：** Phase 6–12 的代码、迁移、测试、Evaluation、UI、Docker、CI、安全检查、作品集材料与 `AGENTS.md` 一并进入本地提交；提交完成后工作区应为 clean。GitHub-hosted CI 仍需 push 后确认。
 - **停止条件：** 完成本地 commit 与 clean-worktree 复核后停止，不自动 push 或开始新 Phase。
+
+### Step 12.9：逐项重建 Phase 12 验收矩阵并完成双轴代码审查
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（收尾验收）。
+- **完成日期：** 2026-08-05
+- **本步骤目标：** 不以“代码可运行”代替验收，对照原始任务、验收标准、代码、测试和运行证据逐项检查，并先列出问题再修改。
+- **审查方式：** 以 `b882da7` 为固定点，分别执行 Standards 与 Spec 两轴审查；同时核对当前 `8754eb0` 阶段提交、工作区、Phase 12 原始任务、README、Current State、Phase report、CI 和测试。
+- **发现的问题：** Blocking：Evaluation CI 新建隔离测试库后直接运行 Evaluation，没有先 migration；外部 Blocking evidence：GitHub-hosted workflow 尚未 push/run，不能声称 CI 全绿。Important：`pyproject.toml` 误写 `httpx2`；FTS expression index 被 Alembic drift 排除但没有独立 contract check；README/状态/报告仍写 3 commits、245 tests 或“没有提交”。Optional：Streamlit 镜像安装完整后端依赖、CI compileall 未覆盖 tests。
+- **范围判断：** 未发现真实企业 Adapter、后续 Phase 功能、任意 Shell/Python/SQL Tool、第二套重复授权或可以安全删除的业务重复模块。Optional 镜像瘦身不影响本 Phase 正确性或安全，因此不处理。
+- **结果：** 明确修复全部 Blocking 代码问题和必要 Important；托管 CI 作为外部证据缺口保留，不用本地结果冒充。
+
+### Step 12.10：修复 CI、依赖和 migration contract 的必要问题
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（收尾修复）。
+- **完成日期：** 2026-08-05
+- **实际完成内容：** Evaluation job 新增数据库 migration step；Quality compileall 与仓库标准统一覆盖 tests；将 `httpx2` 改为 API 镜像/Evaluation CLI 所需的 direct runtime `httpx>=0.28,<1`。保留 PostgreSQL FTS expression index 的 Alembic autogenerate exclusion，但明确其由安全迁移脚本负责；迁移首次升级和已在 head 的 no-op 两条路径都从 PostgreSQL catalog 核验表、GIN access method 和关键表达式 token。
+- **失败路径测试：** 新增 3 个单元测试，分别验证正确 FTS contract、索引缺失、access method/表达式错误；既有 integration migration test 继续验证真实索引存在。
+- **修改文件：** `.github/workflows/ci.yml`、`pyproject.toml`、`migrations/env.py`、`scripts/run_migrations.py`、`tests/unit/test_run_migrations.py`。
+- **运行与真实结果：** 新单测 `3 passed`；现有迁移 integration 合并执行 `4 passed`；`IT_SUPPORT_ENVIRONMENT=test python -m scripts.run_migrations` 输出数据库已在 head，显式 contract 核验通过；`alembic check` 为 `No new upgrade operations detected.`；当前 package 重装后 `pip check` 为 `No broken requirements found.`。
+- **设计边界：** 没有把复杂 PostgreSQL expression index 强行建模进无法稳定 round-trip 的 ORM metadata；也没有增加 downgrade、drop、repair 或自动重建索引。发现漂移时 fail closed，由人工 migration 修复。
+
+### Step 12.11：用全新 Compose 数据卷完成启动、演示和失败场景验收
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（实际运行验收）。
+- **完成日期：** 2026-08-05
+- **隔离方式：** 使用 Compose project `itagent_phase12_closeout`、独立端口 55432/58000/58501 和全新命名卷，不复用原项目数据库；从零 build API/UI/migrate 镜像。
+- **Docker 与迁移结果：** build 成功；首次日志为 `database migrated to Alembic head 20260801_0013`；db/api/ui healthy，migrate exited 0；再次运行 migrate 输出 `database already at Alembic head 20260801_0013`。干净镜像安装日志明确安装 direct `httpx-0.28.1`。
+- **幂等与 Evaluation：** `seed_phase11_demo` 连续两次均返回 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback；容器 Evaluation `eval-20260805T144218Z-10e57dc0` Gate PASS，Recall@3/5 1.0/1.0、MRR 0.8333、Citation/Evidence 1.0、Unsupported Claim 0、Refusal 0.7778、Intent/Tool/Workflow 1.0、Prohibited Action 0。
+- **正常演示：** VPN knowledge question completed 且返回 1 个 Citation；Outlook diagnosis completed，执行 `get_account_status`、`get_mail_service_status`、`search_existing_incidents`、`search_knowledge`；原 actor 确认后本地 Ticket executed；Audit 有 11 条事件；Analytics 返回 200。
+- **失败演示：** wrong actor confirm → 403 `confirmation_access_denied`；employee Analytics → 403 `analytics_access_denied`；PDF suffix + text media type → 415 `unsupported_document_media_type`。
+- **临时资源：** 验收后已删除 `itagent_phase12_closeout` 的容器、网络和三个命名卷；复核原 `itagent` db/api/ui 仍全部 healthy，原项目数据未动。
+
+### Step 12.12：完成 248 项最终门禁与收尾文档同步
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（最终收尾）。
+- **完成日期：** 2026-08-05
+- **最终命令与结果：** Ruff lint `All checks passed!`；Ruff format `171 files already formatted`；compileall 覆盖 apps/src/scripts/migrations/tests；`pip check` 无 broken requirements；security boundary PASS；全量 pytest 使用真实 PostgreSQL/pgvector，`248 passed in 18.18s`。
+- **Secrets：** Gitleaks v8.30.1 扫描 4 个 Git commits 约 1.59 MB 与最终 worktree 约 6.20 MB，均 `no leaks found`；没有扩大 allowlist。
+- **文档同步：** 更新 README 当前功能/迁移说明/测试与 Evaluation 结果、Project Overview、Current State、Phase 12 report、Backlog 和 resume bullets；修正提交状态、4-commit scan、248 tests、新 Evaluation run 与 hosted CI 未运行的事实。
+- **阶段判断：** 已知 Blocking 工程问题全部修复，必要 Important 已修复，Optional 镜像瘦身未处理。总体 **CONDITIONAL PASS**：项目所有者需完成学习验收，且 push 后首次 GitHub-hosted CI 必须全绿；本轮不擅自 commit、push、tag 或开始下一 Phase。
+- **建议版本：** Commit `fix(delivery): close phase 12 acceptance gaps`；学习验收和 hosted CI 均通过后 Tag `phase-12-complete`。
+
+### Step 12.13：修复离线 Evaluation 的证据充分性回归
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（评估加固）。
+- **完成日期：** 2026-08-11
+- **问题与根因：** `knowledge-07/08` 会因问题中的 `VPN`、`Outlook`、`SOP` 等范围词检索到同主题文档，而本地 Fake RAG 只要收到任意 Context 就固定标记 `answerable=true`，使 Refusal Correctness 只有 `0.7778`。先将集成断言改为期望 `1.0`，真实得到 `0.7778 != 1`；修复探针随后暴露 `knowledge-02` 的正确 Troubleshooting Chunk 被无语义 Fake vector 噪声挤出 Top-5，旧的文档级 Recall 没有揭示这个分段证据缺口。
+- **实际修复：** Fake RAG 先按问题的具体 subject terms 选择证据；只有所选片段支持具体事项才标记可回答，否则返回结构化拒答且不绑定 Citation。RAG 默认 Top-K 从 5 校准到 8，使当前小型演示语料中的正确分段能进入受控 Context；没有更改真实模型 Prompt、权限过滤、Citation 物化或 Tool Gateway。
+- **新增失败路径测试：** 新增 Fake RAG “只有文档范围词重叠必须拒答”和“具体 subject 支持优先于通用介绍片段”两个单元测试；完整 Evaluation 集成测试要求 Refusal Correctness 为 `1.0` 且 `knowledge-07/08` 不再失败。
+- **运行与真实结果：** 修复前定向集成测试按预期失败；第一次修复后 `knowledge-02` 失败并促成 Chunk 级诊断；最终定向集成测试 `1 passed in 6.14s`，新增单元测试 `2 passed in 0.34s`，相关 Ruff lint/format 通过。完整 30-case Evaluation 和全量门禁将在最终验证步骤记录。
+- **限制：** 该规则只让 Fake provider 成为更可信的离线/演示替身，不证明任意真实模型同样拒答；真实 provider 仍必须显式授权并单独评估。Top-K=8 是针对当前小型演示语料的可解释校准，不宣称适用于大型生产知识库。
+
+### Step 12.14：补齐 CI 供应链与受控依赖更新门禁
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（CI 加固）。
+- **完成日期：** 2026-08-11
+- **实际完成内容：** 将 checkout、Python setup、Gitleaks、Buildx 和 Docker build 五类第三方 Action 从可变 tag 固定到经 GitHub API 解析的完整 commit SHA，并保留 tag 注释供 Dependabot 识别；三处 CI pgvector service 固定到本机已验证的 `sha256:feb68f…33966` 镜像 digest。新增独立 Python dependency audit job，固定使用 `pip-audit==2.10.1`，按 `pyproject.toml` 隔离解析并 strict fail closed。新增 Dependabot 配置，按月为 pip、GitHub Actions 和 Docker 提交受控 minor/patch 更新，限制每类最多 5 个开放 PR。
+- **为什么没有完整 lockfile：** 当前项目同时服务本地 Python、两个 Docker 镜像和教学型跨平台安装；本步骤没有在 Phase 12 收尾阶段引入新的锁定工具链。major-bounded project dependencies、干净镜像 build、pip-audit 与 Dependabot 共同构成当前作品集级策略，完整 hash lock 仍属于生产发布工程。
+- **运行与真实结果：** GitHub API 成功解析 5 个官方 Action ref；本地镜像检查得到 pgvector digest，随后从 Docker Hub Registry 读取 OCI index，确认同一 digest 同时包含 Linux amd64/arm64，适用于 GitHub runner 和本机；workflow 与 Dependabot YAML 解析成功；扫描确认没有剩余 `uses: ...@v*` 可变引用；`python -m pip_audit . --strict` → `No known vulnerabilities found`；`docker compose config --quiet` exit 0。
+- **限制：** 漏洞数据库结果具有时间性，必须依靠 hosted CI 和 Dependabot 持续重跑；这不是供应链签名、SLSA provenance 或生产安全认证。
+
+### Step 12.15：以全新 Compose 数据卷完成最终演示验收
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（发布演示验收）。
+- **完成日期：** 2026-08-11
+- **隔离方式：** 使用 `itagent_phase12_release` Compose project、端口 55433/58001/58502 和三个全新命名卷，从零构建 API、migrate、UI 镜像；不复用原项目数据库。Compose 与 CI 的 pgvector 镜像均使用已验证 digest。
+- **Docker 与 migration：** db/api/ui 全部 healthy，migrate exited 0；首次日志 `database migrated to Alembic head 20260801_0013`，第二次运行 `database already at Alembic head 20260801_0013`；API/UI 均以 UID 10001 运行；health、ready、Streamlit health 全部成功。两次 seed 均为 6 Runs、23 Steps、6 Tools、4 Tickets、4 Feedback。
+- **正常演示：** `What is the approved VPN server address?` 返回 completed、1 个 Citation 和 `vpn.demo.invalid` 虚构地址；Outlook 错误诊断 completed，四个 Mock tools `get_mail_service_status`、`get_account_status`、`search_existing_incidents`、`search_knowledge` 均 succeeded；确认建单得到 `IT-20260811-000001`，重复确认返回相同 Ticket。
+- **失败演示：** wrong actor 确认 → 403 `confirmation_access_denied`；employee Dashboard → 403 `analytics_access_denied`；`.docx` + octet-stream 上传 → 415 `unsupported_document_media_type`。Audit 返回 9 条、其中 1 条 deny；支持角色 Dashboard 返回 41 Runs、5 Tickets、1 条最近 Evaluation。
+- **Evaluation：** 容器 run `eval-20260811T124452Z-a5973f16`，Gate PASS、失败案例 `[]`；Recall@3 1.0、MRR 0.9167、Citation Validity 1.0、Refusal Correctness 1.0、Prohibited Action Rate 0。该 run 使用 Fake model/embedding 与 30 条虚构案例。
+- **UI 可见性：** 使用本地浏览器实际打开 Streamlit Chat 和 Analytics Dashboard；Chat 输入、模拟身份、页面切换可见，Dashboard 显示 Tickets、Self-service、Human transfer、Tool success、Satisfaction、Steps、Tool calls、Latency、图表与 Recent Evaluation。未发现浏览器 console error；存在 Altair/Vega 对空或离散数据的非阻断 warning，不作为本 Phase Blocking。
+- **发现的文档偏差：** 原 Demo 问句 “connecting from home” 实际只命中 VPN Overview，不足以展示配置步骤；最终演示改用固定评估集中的 approved server address 问句，确保回答与引用片段一致。
+- **临时资源清理：** 验收后已删除 `itagent_phase12_release` 的容器、网络和三个命名卷，可恢复性为无（仅含本次虚构临时数据）。原 `itagent` 测试数据库容器保持 healthy；其 API/UI 在本步骤开始前即处于 exited 状态，本步骤未修改原卷。
+
+### Step 12.16：完成 251 项最终门禁、漏洞与 secrets 扫描
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（发布门禁）。
+- **完成日期：** 2026-08-11
+- **首次全量发现：** 在证据充分性修复后，第一次全量得到 `1 failed, 249 passed`：原有 Account FAQ 问题使用复数 `passwords`，证据使用单数 `password`，窄词法判断误拒答。没有放宽断言；新增有限、可解释的英文复数 `-s` 归一化，并新增单复数回归单测。定向三类知识 API + 3 个 Fake RAG 单测随后 `6 passed`。
+- **最终全量：** `.venv/bin/python -m pytest -q` → `251 passed in 17.31s`；Ruff lint `All checks passed!`；format `172 files already formatted`；compileall、pip check、security boundary、Git whitespace 全部通过；migration 在 `20260801_0013` no-op。
+- **依赖与 Evaluation：** `python -m pip_audit . --strict` → `No known vulnerabilities found`；Evaluation `eval-20260811T125222Z-6a3c661e` Gate PASS、failed cases `[]`，当前 baseline 可比较。未调用真实 Model/Embedding API。
+- **Secrets：** 从官方 GitHub release 下载 Gitleaks v8.30.1，校验 Darwin arm64 包 SHA-256 为 `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5`；worktree 约 6.53 MB 和当时 4-commit Git history 约 1.59 MB 均 `no leaks found`。发布 commit 后必须重扫新增 history 才能 push。
+- **文档同步：** README、Project Overview、Current State、Phase report、Demo script 和 resume bullets 已更新到 251 tests、零失败 Evaluation、MRR 0.9167、Refusal 1.0、dependency audit、pinned supply-chain refs 和真实 VPN server-address 演示问句；GitHub-hosted CI 状态仍保持待确认，未提前写成通过。
