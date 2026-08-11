@@ -299,7 +299,7 @@ IT_SUPPORT_ENVIRONMENT=test .venv/bin/python -m scripts.run_evaluations
 - Gitleaks secret scan；
 - FastAPI 与 Streamlit Docker build。
 
-Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 Compose 健康链路、安全 migration、30-case Evaluation、依赖漏洞和 secret scan 均已实际运行；完整证据记录在 [`docs/phase_reports/phase_12.md`](docs/phase_reports/phase_12.md)。GitHub-hosted workflow 只有在 push 后才能产生远端绿灯，本仓库当前不把“workflow 文件存在”写成“远端 CI 已通过”。
+Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 Compose 健康链路、安全 migration、30-case Evaluation、依赖漏洞和 secret scan 均已实际运行；完整证据记录在 [`docs/phase_reports/phase_12.md`](docs/phase_reports/phase_12.md)。GitHub-hosted [CI run 31494468543](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) 的 8 个 jobs 全部通过，覆盖同一组质量、数据库、评估、安全和镜像门禁。
 
 ## 安全边界
 
@@ -311,7 +311,7 @@ Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 
 - 跨 actor/role 的 Run、Confirmation、Ticket、Audit、Analytics 和 Approval 读取或操作会被拒绝；
 - 测试环境禁止真实 Model/Embedding Provider；Evaluation 要使用真实 Provider 必须显式授权。
 
-第三方 GitHub Actions 和 pgvector CI/Compose 镜像使用不可变 SHA/digest，`pip-audit` 当前未发现已知漏洞，Dependabot 按月提出 pip、Actions 和 Docker minor/patch 更新。这仍是作品集级安全基线，不是生产安全认证；公开仓库前还应人工检查 Git history、截图与二进制 fixture，并按托管方案启用平台 secret scanning 和分支保护。
+第三方 GitHub Actions 和 pgvector CI/Compose 镜像使用不可变 SHA/digest，`pip-audit` 当前未发现已知漏洞，Dependabot 按月提出 pip、Actions 和 Docker minor/patch 更新；私有 GitHub 仓库已启用 vulnerability alerts 和 automated security fixes。这仍是作品集级安全基线，不是生产安全认证；公开仓库前还应人工检查 Git history、截图与二进制 fixture，并按托管方案确认平台 secret scanning 和分支保护能力。
 
 ## 当前结果
 
@@ -324,6 +324,7 @@ Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 
 - FastAPI/Streamlit 镜像从干净依赖环境构建成功；隔离 Compose 项目中 db/api/ui healthy、首次 migration exited 0，重复 migration no-op，seed 连续两次计数一致；
 - Gitleaks 工作区与完整 Git history 均未发现泄漏；`pip-audit` 未发现当前解析依赖的已知漏洞；
 - Streamlit Chat/Dashboard、幂等 seed、R1 确认建单和 R3 模拟审批已有真实本地演示证据。
+- GitHub-hosted CI 已在发布分支的 PR 上 8/8 通过；仓库当前保持 private，改为公开仍需项目所有者明确确认。
 
 这些数字来自固定虚构数据和本机/CI 环境，不代表生产 SLA、真实员工满意度或真实企业准确率。
 

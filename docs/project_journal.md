@@ -2245,3 +2245,15 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **依赖与 Evaluation：** `python -m pip_audit . --strict` → `No known vulnerabilities found`；Evaluation `eval-20260811T125222Z-6a3c661e` Gate PASS、failed cases `[]`，当前 baseline 可比较。未调用真实 Model/Embedding API。
 - **Secrets：** 从官方 GitHub release 下载 Gitleaks v8.30.1，校验 Darwin arm64 包 SHA-256 为 `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5`；worktree 约 6.53 MB 和当时 4-commit Git history 约 1.59 MB 均 `no leaks found`。发布 commit 后必须重扫新增 history 才能 push。
 - **文档同步：** README、Project Overview、Current State、Phase report、Demo script 和 resume bullets 已更新到 251 tests、零失败 Evaluation、MRR 0.9167、Refusal 1.0、dependency audit、pinned supply-chain refs 和真实 VPN server-address 演示问句；GitHub-hosted CI 状态仍保持待确认，未提前写成通过。
+
+### Step 12.17：发布私有 GitHub 仓库并完成 hosted CI 闭环
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（GitHub 发布验收）。
+- **完成日期：** 2026-08-11
+- **Git hygiene：** 将尚未发布的 5 个提交重写为 GitHub noreply author/committer，移除原提交身份中的本机 LAN hostname；重写前后最终 tree 完全一致。建立私有仓库 `scout099/enterprise-it-support-ai-agent`，push `main` 与 `agent/phase-12-release`，并创建 Draft PR #1。仓库保持 private，没有未经确认切换为公开或创建 Tag。
+- **首次 hosted 失败：** run `31494076726` 中两个 Docker build 与 dependency audit 通过；四个 Python jobs 因 `--no-build-isolation` 要求 runner 预装 `setuptools.build_meta` 而安装失败；Gitleaks Action 因最小只读 token 无权访问其请求的 PR 资源而报 `Resource not accessible by integration`。这些是 runner bootstrap/Action 权限问题，不是 pytest、migration 或泄漏检测结果失败。
+- **必要修复：** 四个项目安装恢复标准 PEP 517 build isolation；Secrets job 不再使用需要额外 GitHub API 权限的 Action，而是下载固定 Gitleaks v8.30.1 Linux x64 release、校验官方 SHA-256 后直接执行 Git history 与 worktree 双扫描。继续保留 `contents: read`，没有增加写权限或自动评论。
+- **最终托管结果：** commit `6e7589e` 的 PR run [`31494468543`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31494468543) status `completed`、conclusion `success`。Python dependency audit、Migration safety and drift、Secret scan、Evaluation regression、Docker build (fastapi)、Ruff and package checks、Docker build (streamlit)、pytest with PostgreSQL and pgvector 共 8/8 jobs 通过。
+- **GitHub 安全设置：** vulnerability alerts endpoint 返回 204；automated security fixes 返回 `enabled=true`、`paused=false`。仓库内 monthly Dependabot、hosted `pip-audit` 和 Gitleaks 继续作为独立 fail-closed 门禁。
+- **最终本地重扫：** 重新下载 Gitleaks v8.30.1 Darwin arm64 官方包并核对 SHA-256 `b40ab0ae55c…aeb6a5`；最终文档工作区约 6.54 MB、6 commits history 约 1.63 MB，二者均 `no leaks found`。Ruff lint、format、repository security boundary 与 `git diff --check` 同时通过。
+- **阶段影响：** hosted CI 外部证据缺口关闭，Phase 12 工程结论为 PASS。总体仍为 CONDITIONAL PASS 的唯一原因是项目所有者需独立完成学习验收；公开可见性和 `phase-12-complete` Tag 均不在未确认情况下执行。本步骤同步 README、Current State、Roadmap 与 Phase 12 report，不进入下一 Phase。

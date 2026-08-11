@@ -16,6 +16,6 @@
 | 9 | CONDITIONAL PASS（工程已通过，学习待验收） | 本地 RBAC、R0–R4 确定性 Policy、R3 人工审批、可恢复 checkpoint resume 与模拟执行 |
 | 10 | CONDITIONAL PASS（工程已通过，学习待验收） | 30-case Agent 评估、确定性四层指标、Fake 全运行、报告/差异与安全回归门禁 |
 | 11 | CONDITIONAL PASS（工程已通过，学习待验收） | FastAPI-only Streamlit Chat/Dashboard、Feedback、SQL/pandas 统计与幂等演示 seed |
-| 12 | CONDITIONAL PASS（本地工程门禁通过，远端 CI 待首次运行） | Docker/Compose、安全 migration、GitHub Actions、安全回归、README 与作品集材料 |
+| 12 | CONDITIONAL PASS（本地与 hosted 工程门禁通过，学习待验收） | Docker/Compose、安全 migration、GitHub Actions、安全回归、README 与作品集材料 |
 
 Phase 4 原计划中的自然语言 RAG 回答先按 2026-07-22 指令移出，随后项目所有者明确授权为 Phase 5。2026-07-23 的明确指令把请求识别与 LangGraph 基础 Runtime 合并为 Phase 6，并另行明确授权 Phase 7 只读诊断与 Mock 工具。2026-07-24 先授权 Phase 8 本地工单、低风险写入、用户确认和审计，随后明确把 Phase 9 从旧 Backlog 的离线评估改为 RBAC、风险策略与 Human-in-the-loop 模拟审批。离线评估已于 Phase 10 实现；Phase 11 按 2026-08-01 指令使用 Streamlit，并增加后端 Feedback 和 Analytics。2026-08-05 的明确指令把旧 Backlog 的安全预验收和 Docker/作品集打包合并为最终 Phase 12，因此不再另设 Phase 13。未经项目所有者确认，不自动开始新的 Phase。
