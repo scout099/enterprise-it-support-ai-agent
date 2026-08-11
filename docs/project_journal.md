@@ -2267,3 +2267,12 @@ Step 2.1 的完整记录已写入本文件，但因追加补丁使用了重复�
 - **最终验证：** YAML 解析、Ruff、format、security boundary 和 Git whitespace 通过；PR #5 run `31496501929` 8/8 success 后合并。当前 main run [`31496706696`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31496706696) 在 merge commit `d27fe8e` 上 8/8 success；Docker Dependabot `31496712533`、pip `31496712575`、GitHub Actions `31496712820` 均 success，Docker job 名称明确为 `docker in /docker`。
 - **PR 清理与边界：** 旧 GitHub Actions major PR 由新策略自动关闭；残留 ReportLab major-range PR #4 人工关闭并说明 major 升级必须独立评审。新策略提出 Python 3.14 runtime PR #6，符合 Docker semver-minor 规则但没有自动合并；保留为后续独立维护建议，不改变 Phase 12 的 Python 3.12 已验收基线，也不在本轮扩展升级范围。
 - **阶段结论：** Dependabot 持续更新门禁的真实平台失败已关闭；Phase 12 工程 PASS，整体仍仅因学习验收为 CONDITIONAL PASS。仓库保持 private、无 Tag，不进入下一 Phase。
+
+### Step 12.19：按项目所有者授权公开作品集仓库
+
+- **所属 Phase：** Phase 12：部署、CI、安全检查和作品集包装（公开发布）。
+- **完成日期：** 2026-08-11
+- **授权与动作：** 项目所有者明确要求“改成公开”；将 `scout099/enterprise-it-support-ai-agent` 从 Private 切换为 Public，没有创建 Tag、Release、部署或开始下一 Phase。
+- **公开后验证：** GitHub 返回 `visibility=PUBLIC`、`isPrivate=false`、默认分支 `main`；公开前最终 main commit `8b05d22` 的 CI run [`31497475355`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31497475355) status completed、conclusion success，8 个 jobs 全部通过。本地 `main` 与 `origin/main` 同步且工作区 clean。
+- **文档同步：** README、Current State 与 Phase 12 report 更新为 Public 作品集事实；此前 journal 中“当时保持 private”的记录是历史事实，保留不改写。本次文档提交仍需通过同一 hosted CI 后合并。
+- **阶段边界：** 工程与公开作品集交付 PASS；总体仍仅因独立学习验收保持 CONDITIONAL PASS。Python 3.14 Dependabot PR #6 未自动合并，仍是后续独立维护建议，不是 Phase 12 Blocking。

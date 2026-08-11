@@ -311,7 +311,7 @@ Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 
 - 跨 actor/role 的 Run、Confirmation、Ticket、Audit、Analytics 和 Approval 读取或操作会被拒绝；
 - 测试环境禁止真实 Model/Embedding Provider；Evaluation 要使用真实 Provider 必须显式授权。
 
-第三方 GitHub Actions 和 pgvector CI/Compose 镜像使用不可变 SHA/digest，`pip-audit` 当前未发现已知漏洞，Dependabot 按月提出 pip、Actions 和 Docker minor/patch 更新；私有 GitHub 仓库已启用 vulnerability alerts 和 automated security fixes。这仍是作品集级安全基线，不是生产安全认证；公开仓库前还应人工检查 Git history、截图与二进制 fixture，并按托管方案确认平台 secret scanning 和分支保护能力。
+第三方 GitHub Actions 和 pgvector CI/Compose 镜像使用不可变 SHA/digest，`pip-audit` 当前未发现已知漏洞，Dependabot 按月提出 pip、Actions 和 Docker minor/patch 更新；公开 GitHub 仓库已启用 vulnerability alerts 和 automated security fixes。公开前已完成 Git history、工作区与演示数据人工/自动检查。这仍是作品集级安全基线，不是生产安全认证；平台 secret scanning 和分支保护应按后续维护策略持续复核。
 
 ## 当前结果
 
@@ -324,7 +324,7 @@ Phase 12 收尾本地全量为 `251 passed`。两个镜像、全新数据卷的 
 - FastAPI/Streamlit 镜像从干净依赖环境构建成功；隔离 Compose 项目中 db/api/ui healthy、首次 migration exited 0，重复 migration no-op，seed 连续两次计数一致；
 - Gitleaks 工作区与完整 Git history 均未发现泄漏；`pip-audit` 未发现当前解析依赖的已知漏洞；
 - Streamlit Chat/Dashboard、幂等 seed、R1 确认建单和 R3 模拟审批已有真实本地演示证据。
-- Phase 12 PR #1 与 Dependabot 策略修复 PR #5 已合并；对应 `main` hosted CI 8/8 通过。仓库保持 private，改为公开仍需项目所有者明确确认。
+- Phase 12 PR #1 与 Dependabot 策略修复 PR #5 已合并；对应 `main` hosted CI 8/8 通过。仓库已按项目所有者明确授权切换为 Public，可作为作品集链接访问。
 
 这些数字来自固定虚构数据和本机/CI 环境，不代表生产 SLA、真实员工满意度或真实企业准确率。
 

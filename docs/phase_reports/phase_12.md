@@ -6,7 +6,7 @@
 
 Phase 12 已把旧 Backlog 的安全预验收和 Docker/作品集交付合并完成。FastAPI、Streamlit、PostgreSQL/pgvector 和一次性 migration 可由 Docker Compose 完整启动；发布收尾后本地 251 项测试、migration drift、零失败 30-case Evaluation、两个镜像、全新数据卷启动、幂等 seed、Gitleaks、dependency audit 和安全边界检查均实际通过。
 
-Phase 6–12 已收敛到经过脱敏的 Git history，并上传到私有 GitHub 仓库。Phase 12 PR #1 与 Dependabot 策略修复 PR #5 已合并；策略修复对应的 `main` run [`31496706696`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31496706696) 在 merge commit `d27fe8e` 上 8/8 jobs success。没有剩余 Blocking 代码或托管门禁缺口；阶段仍为 CONDITIONAL PASS 的唯一原因是学习验收尚需由项目所有者独立完成。
+Phase 6–12 已收敛到经过脱敏的 Git history，并上传到 Public GitHub 仓库。Phase 12 PR #1、Dependabot 策略修复 PR #5 与最终证据 PR #7 已合并；最终公开前 `main` run [`31497475355`](https://github.com/scout099/enterprise-it-support-ai-agent/actions/runs/31497475355) 在 merge commit `8b05d22` 上 8/8 jobs success。没有剩余 Blocking 代码、托管门禁或作品集可见性缺口；阶段仍为 CONDITIONAL PASS 的唯一原因是学习验收尚需由项目所有者独立完成。
 
 ## 验收矩阵
 
@@ -79,7 +79,7 @@ Workflow 使用最小 `contents: read` 权限和同分支并发取消，包含�
 
 所有第三方 Actions 均固定到经 GitHub API 解析的完整 commit SHA，CI/Compose pgvector 固定镜像 digest；`.github/dependabot.yml` 按月为 pip、GitHub Actions 与 Docker 提交 grouped minor/patch PR。当前仍没有完整 hash lockfile 或镜像签名，这些限制没有被 dependency audit 夸大为生产供应链认证。
 
-私有仓库已启用 GitHub vulnerability alerts 和 automated security fixes；API 复核分别返回 204 与 `enabled=true, paused=false`。这些平台能力补充而不替代仓库内的 `pip-audit`、Gitleaks 和 Dependabot 配置。
+Public 仓库已启用 GitHub vulnerability alerts 和 automated security fixes；API 复核分别返回 204 与 `enabled=true, paused=false`。这些平台能力补充而不替代仓库内的 `pip-audit`、Gitleaks 和 Dependabot 配置。
 
 首次 Dependabot Docker job 因 directory `/` 不含 Dockerfile 而失败；真实 Dockerfiles 位于 `/docker`。配置修正后，Docker run `31496712533`、pip run `31496712575`、GitHub Actions run `31496712820` 全部 success。三类配置显式忽略 semver-major；错误策略产生的 major PR 已关闭。平台另提出 Python 3.14 runtime PR #6，但未自动合并，当前验收基线仍为 Python 3.12。
 
@@ -146,7 +146,7 @@ Workflow 使用最小 `contents: read` 权限和同分支并发取消，包含�
 
 ## 已知限制
 
-- 私有 GitHub 仓库的 PR hosted CI 已通过；仓库尚未公开，公开可见性切换仍需项目所有者明确确认；
+- GitHub 仓库已按项目所有者明确授权切换为 Public；公开前 secrets、虚构数据和 hosted CI 证据已完成；
 - Python 依赖是 major-bounded ranges，不是完整 hash lockfile；本轮干净镜像、dependency audit 与 Dependabot 通过，但生产发布仍需正式锁定；
 - Compose 是 localhost Demo，不包含 TLS、生产 secret manager、高可用、集群 migration lock、镜像签名或漏洞认证；
 - 本地 actor/role 不是 SSO/可信 Principal，没有 tenant isolation；
@@ -154,7 +154,7 @@ Workflow 使用最小 `contents: read` 权限和同分支并发取消，包含�
 - Approval decision/resume 和文件/数据库边界仍存在非原子窗口；
 - PDF 无 OCR，pgvector exact scan，Evaluation 只有 30 条虚构案例；
 - Refusal Correctness 已在固定 Fake 评估集达到 1.0，但 groundedness 仍是有限词法检查，不能代表真实 Provider 或生产问题分布；
-- Phase 6–12 的跨 Phase 工作区已按项目所有者要求收敛并 push 到私有 GitHub 仓库；尚未 tag。
+- Phase 6–12 的跨 Phase 工作区已按项目所有者要求收敛并 push 到 Public GitHub 仓库；尚未 tag。
 
 ## 必须能解释的核心点
 
@@ -173,7 +173,7 @@ Workflow 使用最小 `contents: read` 权限和同分支并发取消，包含�
 - 本轮建议 Commit：`fix(delivery): close phase 12 acceptance gaps`
 - 建议 Tag：学习验收完成且 GitHub-hosted CI 通过后使用 `phase-12-complete`
 
-Phase 12 工程结论为 **PASS**，总体为 **CONDITIONAL PASS**。唯一条件是项目所有者完成本轮给出的学习任务；GitHub-hosted CI 已 8/8 通过。根目录 `AGENTS.md` 已建立并纳入提交；仓库当前保持 private，尚未 tag。本次到此停止，不自动开始新的 Phase。
+Phase 12 工程结论为 **PASS**，总体为 **CONDITIONAL PASS**。唯一条件是项目所有者完成本轮给出的学习任务；GitHub-hosted CI 已 8/8 通过，Public 作品集仓库已就绪。根目录 `AGENTS.md` 已建立并纳入提交；尚未 tag。本次到此停止，不自动开始新的 Phase。
 
 ## 2026-08-05 收尾验收补充
 
